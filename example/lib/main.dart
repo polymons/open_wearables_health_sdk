@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -118,6 +119,10 @@ class _HomePageState extends State<HomePage> {
   bool _isAuthorized = false;
   bool _isSyncing = false;
 
+  // Provider selection (Android only)
+  List<AvailableProvider> _availableProviders = [];
+  String? _selectedProviderId;
+
   @override
   void initState() {
     super.initState();
@@ -180,13 +185,56 @@ class _HomePageState extends State<HomePage> {
         });
       }
 
+      // Restore selected provider if stored
+      final storedProvider = credentials['provider'] as String?;
+      if (storedProvider != null) {
+        setState(() => _selectedProviderId = storedProvider);
+      }
+
       if (hasUserId && hasAccessToken && hasHost && wasSyncActive) {
         await OpenWearablesHealthSdk.configure(host: credentials['host'] as String);
         _checkStatus();
         _setStatus('Session restored');
       }
+
+      if (Platform.isAndroid) {
+        await _loadAvailableProviders();
+      }
     } catch (e) {
       debugPrint('Auto-configure failed: $e');
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadAvailableProviders() async {
+    try {
+      final providers = await OpenWearablesHealthSdk.getAvailableProviders();
+      setState(() {
+        _availableProviders = providers;
+        if (_selectedProviderId == null && providers.isNotEmpty) {
+          _selectedProviderId = providers.first.id;
+        }
+      });
+    } catch (e) {
+      debugPrint('Failed to load providers: $e');
+    }
+  }
+
+  Future<void> _selectProvider(String providerId) async {
+    final provider = AndroidHealthProvider.fromId(providerId);
+    if (provider == null) return;
+
+    setState(() => _isLoading = true);
+    try {
+      await OpenWearablesHealthSdk.setProvider(provider);
+      setState(() {
+        _selectedProviderId = providerId;
+        _isAuthorized = false;
+      });
+      _setStatus('Provider set to ${provider.displayName}');
+    } catch (e) {
+      _setStatus('Failed to set provider: $e');
     } finally {
       setState(() => _isLoading = false);
     }
@@ -242,11 +290,21 @@ class _HomePageState extends State<HomePage> {
 
       _setStatus('Connected successfully');
       _checkStatus();
+
+      if (Platform.isAndroid) {
+        await _loadAvailableProviders();
+      }
     } catch (e) {
       _setStatus('Connection failed: $e');
     } finally {
       setState(() => _isLoading = false);
     }
+  }
+
+  String _providerDisplayName(String id) {
+    final match = _availableProviders.where((p) => p.id == id);
+    if (match.isNotEmpty) return match.first.displayName;
+    return AndroidHealthProvider.fromId(id)?.displayName ?? id;
   }
 
   void _checkStatus() {
@@ -372,7 +430,13 @@ class _HomePageState extends State<HomePage> {
                   _buildStatusCard(),
                   const SizedBox(height: 24),
 
-                  if (!_isSignedIn) ...[_buildLoginSection()] else ...[_buildActionsSection()],
+                  if (!_isSignedIn) ...[_buildLoginSection()] else ...[
+                    if (Platform.isAndroid && _availableProviders.isNotEmpty) ...[
+                      _buildProviderSection(),
+                      const SizedBox(height: 16),
+                    ],
+                    _buildActionsSection(),
+                  ],
 
                   if (_statusMessage.isNotEmpty) ...[const SizedBox(height: 24), _buildStatusMessage()],
                 ],
@@ -436,7 +500,9 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  _isSignedIn ? 'Connected to ${_hostController.text}' : 'Not connected',
+                  _isSignedIn
+                      ? 'Connected${_selectedProviderId != null ? ' via ${_providerDisplayName(_selectedProviderId!)}' : ''}'
+                      : 'Not connected',
                   style: const TextStyle(fontSize: 15, color: OWColors.textSecondary, letterSpacing: -0.2),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -548,6 +614,124 @@ class _HomePageState extends State<HomePage> {
     return Padding(
       padding: const EdgeInsets.only(left: 56),
       child: Divider(height: 1, color: OWColors.border.withValues(alpha: 0.5)),
+    );
+  }
+
+  Widget _buildProviderSection() {
+    return Container(
+      decoration: BoxDecoration(
+        color: OWColors.surface.withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: OWColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 20, 20, 4),
+            child: Text(
+              'HEALTH PROVIDER',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: OWColors.textMuted,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Text(
+              'Select where to read health data from',
+              style: TextStyle(fontSize: 14, color: OWColors.textFooter),
+            ),
+          ),
+          for (int i = 0; i < _availableProviders.length; i++) ...[
+            if (i > 0)
+              Padding(
+                padding: const EdgeInsets.only(left: 64),
+                child: Divider(height: 1, color: OWColors.border.withValues(alpha: 0.5)),
+              ),
+            _buildProviderOption(_availableProviders[i]),
+          ],
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProviderOption(AvailableProvider provider) {
+    final isSelected = _selectedProviderId == provider.id;
+    final iconData = provider.id == 'samsung_health'
+        ? CupertinoIcons.device_phone_portrait
+        : CupertinoIcons.heart_circle;
+
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      onPressed: _isLoading
+          ? null
+          : () {
+              if (!isSelected) _selectProvider(provider.id);
+            },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: (isSelected ? OWColors.accentIndigo : OWColors.textMuted).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                iconData,
+                color: isSelected ? OWColors.accentIndigo : OWColors.textMuted,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    provider.displayName,
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w500,
+                      color: isSelected ? OWColors.textPrimary : OWColors.textSecondary,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                  Text(
+                    provider.id == 'samsung_health'
+                        ? 'Samsung devices with Samsung Health'
+                        : 'Universal Android health hub',
+                    style: const TextStyle(fontSize: 14, color: OWColors.textMuted, letterSpacing: -0.1),
+                  ),
+                ],
+              ),
+            ),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              width: 24,
+              height: 24,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isSelected ? OWColors.accentIndigo : Colors.transparent,
+                border: Border.all(
+                  color: isSelected ? OWColors.accentIndigo : OWColors.textFooter,
+                  width: 2,
+                ),
+              ),
+              child: isSelected
+                  ? const Icon(Icons.check, size: 16, color: Colors.white)
+                  : null,
+            ),
+          ],
+        ),
+      ),
     );
   }
 

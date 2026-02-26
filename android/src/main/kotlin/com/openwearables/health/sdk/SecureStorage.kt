@@ -7,7 +7,8 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
 /**
- * Secure storage for credentials using EncryptedSharedPreferences
+ * Secure storage for credentials using EncryptedSharedPreferences.
+ * Mirrors the iOS Keychain-based storage approach.
  */
 class SecureStorage(private val context: Context) {
 
@@ -18,16 +19,16 @@ class SecureStorage(private val context: Context) {
 
         // Secure keys (encrypted)
         private const val KEY_ACCESS_TOKEN = "accessToken"
+        private const val KEY_REFRESH_TOKEN = "refreshToken"
         private const val KEY_USER_ID = "userId"
-        private const val KEY_APP_ID = "appId"
-        private const val KEY_APP_SECRET = "appSecret"
+        private const val KEY_API_KEY = "apiKey"
 
         // Config keys (not encrypted, not sensitive)
+        private const val KEY_HOST = "host"
         private const val KEY_CUSTOM_SYNC_URL = "customSyncUrl"
         private const val KEY_SYNC_ACTIVE = "syncActive"
         private const val KEY_TRACKED_TYPES = "trackedTypes"
-        private const val KEY_TOKEN_EXPIRES_AT = "tokenExpiresAt"
-        private const val KEY_BASE_URL = "baseUrl"
+        private const val KEY_HEALTH_PROVIDER = "healthProvider"
         private const val KEY_APP_INSTALLED = "appInstalled"
     }
 
@@ -56,9 +57,6 @@ class SecureStorage(private val context: Context) {
 
     // MARK: - Fresh Install Detection
 
-    /**
-     * Call this on app launch to clear data if app was reinstalled.
-     */
     fun clearIfReinstalled() {
         val wasInstalled = configPrefs.getBoolean(KEY_APP_INSTALLED, false)
 
@@ -73,64 +71,69 @@ class SecureStorage(private val context: Context) {
 
     // MARK: - Credentials
 
-    fun saveCredentials(userId: String, accessToken: String) {
-        securePrefs.edit()
-            .putString(KEY_USER_ID, userId)
-            .putString(KEY_ACCESS_TOKEN, accessToken)
-            .apply()
+    fun saveCredentials(userId: String, accessToken: String?, refreshToken: String?) {
+        securePrefs.edit().apply {
+            putString(KEY_USER_ID, userId)
+            if (accessToken != null) putString(KEY_ACCESS_TOKEN, accessToken)
+            if (refreshToken != null) putString(KEY_REFRESH_TOKEN, refreshToken)
+            apply()
+        }
     }
 
     fun getAccessToken(): String? = securePrefs.getString(KEY_ACCESS_TOKEN, null)
 
+    fun getRefreshToken(): String? = securePrefs.getString(KEY_REFRESH_TOKEN, null)
+
     fun getUserId(): String? = securePrefs.getString(KEY_USER_ID, null)
 
-    fun hasSession(): Boolean = getAccessToken() != null && getUserId() != null
-
-    // MARK: - App Credentials (for token refresh)
-
-    fun saveAppCredentials(appId: String, appSecret: String, baseUrl: String) {
-        securePrefs.edit()
-            .putString(KEY_APP_ID, appId)
-            .putString(KEY_APP_SECRET, appSecret)
-            .apply()
-        configPrefs.edit()
-            .putString(KEY_BASE_URL, baseUrl)
-            .apply()
+    fun hasSession(): Boolean {
+        val userId = getUserId() ?: return false
+        return getAccessToken() != null || getApiKey() != null
     }
 
-    fun getAppId(): String? = securePrefs.getString(KEY_APP_ID, null)
+    // MARK: - Update Tokens (after refresh)
 
-    fun getAppSecret(): String? = securePrefs.getString(KEY_APP_SECRET, null)
+    fun updateTokens(accessToken: String, refreshToken: String?) {
+        securePrefs.edit().apply {
+            putString(KEY_ACCESS_TOKEN, accessToken)
+            if (refreshToken != null) putString(KEY_REFRESH_TOKEN, refreshToken)
+            apply()
+        }
+    }
 
-    fun getBaseUrl(): String? = configPrefs.getString(KEY_BASE_URL, null)
+    // MARK: - API Key (alternative auth mode)
+
+    fun saveApiKey(apiKey: String) {
+        securePrefs.edit().putString(KEY_API_KEY, apiKey).apply()
+    }
+
+    fun getApiKey(): String? = securePrefs.getString(KEY_API_KEY, null)
+
+    val isApiKeyAuth: Boolean
+        get() = getApiKey() != null && getAccessToken() == null
+
+    val authCredential: String?
+        get() = getAccessToken() ?: getApiKey()
+
+    val hasAuth: Boolean
+        get() = authCredential != null
 
     fun hasRefreshCredentials(): Boolean {
-        return getAppId() != null && getAppSecret() != null && getBaseUrl() != null && getUserId() != null
+        return getRefreshToken() != null
     }
 
-    // MARK: - Token Expiry
+    // MARK: - Host (not sensitive, stored in config prefs)
 
-    fun saveTokenExpiry(expiresAtMillis: Long) {
-        configPrefs.edit()
-            .putLong(KEY_TOKEN_EXPIRES_AT, expiresAtMillis)
-            .apply()
+    fun saveHost(host: String) {
+        configPrefs.edit().putString(KEY_HOST, host).apply()
     }
 
-    fun getTokenExpiry(): Long = configPrefs.getLong(KEY_TOKEN_EXPIRES_AT, 0)
-
-    fun isTokenExpired(): Boolean {
-        val expiry = getTokenExpiry()
-        if (expiry == 0L) return true
-        // Consider expired if less than 5 minutes remaining
-        return System.currentTimeMillis() + (5 * 60 * 1000) > expiry
-    }
+    fun getHost(): String? = configPrefs.getString(KEY_HOST, null)
 
     // MARK: - Custom Sync URL
 
     fun saveCustomSyncUrl(url: String) {
-        configPrefs.edit()
-            .putString(KEY_CUSTOM_SYNC_URL, url)
-            .apply()
+        configPrefs.edit().putString(KEY_CUSTOM_SYNC_URL, url).apply()
     }
 
     fun getCustomSyncUrl(): String? = configPrefs.getString(KEY_CUSTOM_SYNC_URL, null)
@@ -138,9 +141,7 @@ class SecureStorage(private val context: Context) {
     // MARK: - Sync Active State
 
     fun setSyncActive(active: Boolean) {
-        configPrefs.edit()
-            .putBoolean(KEY_SYNC_ACTIVE, active)
-            .apply()
+        configPrefs.edit().putBoolean(KEY_SYNC_ACTIVE, active).apply()
     }
 
     fun isSyncActive(): Boolean = configPrefs.getBoolean(KEY_SYNC_ACTIVE, false)
@@ -148,25 +149,40 @@ class SecureStorage(private val context: Context) {
     // MARK: - Tracked Types
 
     fun saveTrackedTypes(types: List<String>) {
-        configPrefs.edit()
-            .putStringSet(KEY_TRACKED_TYPES, types.toSet())
-            .apply()
+        configPrefs.edit().putStringSet(KEY_TRACKED_TYPES, types.toSet()).apply()
     }
 
     fun getTrackedTypes(): List<String> {
         return configPrefs.getStringSet(KEY_TRACKED_TYPES, emptySet())?.toList() ?: emptyList()
     }
 
+    // MARK: - Health Provider
+
+    fun saveProvider(providerId: String) {
+        configPrefs.edit().putString(KEY_HEALTH_PROVIDER, providerId).apply()
+    }
+
+    fun getProvider(): String? = configPrefs.getString(KEY_HEALTH_PROVIDER, null)
+
+    // MARK: - API Base URL (derived from host)
+
+    val apiBaseUrl: String?
+        get() {
+            val host = getHost() ?: return null
+            val h = if (host.endsWith("/")) host.dropLast(1) else host
+            return "$h/api/v1"
+        }
+
     // MARK: - Clear
 
     fun clearAll() {
         securePrefs.edit().clear().apply()
         configPrefs.edit()
+            .remove(KEY_HOST)
             .remove(KEY_CUSTOM_SYNC_URL)
             .remove(KEY_SYNC_ACTIVE)
             .remove(KEY_TRACKED_TYPES)
-            .remove(KEY_TOKEN_EXPIRES_AT)
-            .remove(KEY_BASE_URL)
+            .remove(KEY_HEALTH_PROVIDER)
             .apply()
     }
 }

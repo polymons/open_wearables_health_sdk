@@ -8,8 +8,8 @@ enum AndroidHealthProvider {
   /// Samsung Health SDK - works on Samsung devices with Samsung Health app v6.30.2+
   samsungHealth('samsung_health', 'Samsung Health'),
 
-  /// Google Health Connect - universal Android health data hub (future)
-  // healthConnect('health_connect', 'Health Connect'),
+  /// Health Connect - universal Android health data hub (API 28+, built-in on API 34+)
+  healthConnect('health_connect', 'Health Connect'),
   ;
 
   const AndroidHealthProvider(this.id, this.displayName);

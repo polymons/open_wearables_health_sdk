@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.work.*
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -15,10 +14,9 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
-/**
- * Progress tracking per data type
- */
 data class TypeSyncProgress(
     val typeIdentifier: String,
     var sentCount: Int = 0,
@@ -26,9 +24,6 @@ data class TypeSyncProgress(
     var pendingAnchorTimestamp: Long? = null
 )
 
-/**
- * Sync state - tracks progress per type for resume capability
- */
 data class SyncState(
     val userKey: String,
     val fullExport: Boolean,
@@ -43,44 +38,40 @@ data class SyncState(
 }
 
 /**
- * Manages health data synchronization
+ * Manages health data synchronization.
+ *
+ * Works exclusively through the [HealthDataProvider] interface — all
+ * provider-specific reading and unified-format conversion happens inside
+ * the provider. The SyncManager just orchestrates timing, chunking,
+ * auth retry, and payload delivery.
  */
 class SyncManager(
     private val context: Context,
     private val secureStorage: SecureStorage,
-    private val healthManager: SamsungHealthManager,
-    private val logger: (String) -> Unit
+    private val healthProvider: HealthDataProvider,
+    private val logger: (String) -> Unit,
+    private val onAuthError: ((Int, String) -> Unit)? = null
 ) {
     companion object {
         private const val SYNC_PREFS_NAME = "com.openwearables.healthsdk.sync"
         private const val KEY_ANCHORS = "anchors"
-        private const val KEY_FULL_EXPORT_DONE = "fullExportDone"
-        
         private const val WORK_NAME_PERIODIC = "health_sync_periodic"
         private const val WORK_NAME_TESTING = "health_sync_testing"
         private const val CHUNK_SIZE = 2000
-        
-        // Testing mode: 1-minute interval (WorkManager minimum is 15 min for periodic, so we use chained one-time requests)
         private const val TESTING_INTERVAL_MINUTES = 1L
-        private const val TESTING_MODE = true // Set to false for production (15 min intervals)
-        
-        // Sync state file
+        private const val TESTING_MODE = true
         private const val SYNC_STATE_DIR = "health_sync_state"
         private const val SYNC_STATE_FILE = "state.json"
-        
-        // Provider identifiers for sync endpoint
-        const val PROVIDER_SAMSUNG = "samsung"
-        // Future providers: const val PROVIDER_GOOGLE_FIT = "google_fit"
+        const val SDK_VERSION = "0.1.0"
     }
-
-    // Current provider - can be changed for other providers in the future
-    private var currentProvider: String = PROVIDER_SAMSUNG
 
     private val syncPrefs: SharedPreferences by lazy {
         context.getSharedPreferences(SYNC_PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     private val gson = Gson()
+    private val prettyGson = com.google.gson.GsonBuilder().setPrettyPrinting().create()
+
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -92,91 +83,93 @@ class SyncManager(
     }
 
     private var isSyncing = false
-    
+    private val tokenRefreshLock = ReentrantLock()
+    private var isRefreshingToken = false
+
     // MARK: - User Key
-    
+
     private fun userKey(): String {
         val userId = secureStorage.getUserId()
         return if (userId.isNullOrEmpty()) "user.none" else "user.$userId"
     }
 
+    // MARK: - Auth
+
+    private fun applyAuth(requestBuilder: Request.Builder) {
+        val accessToken = secureStorage.getAccessToken()
+        val apiKey = secureStorage.getApiKey()
+        if (accessToken != null) {
+            requestBuilder.header("Authorization", accessToken)
+        } else if (apiKey != null) {
+            requestBuilder.header("X-Open-Wearables-API-Key", apiKey)
+        }
+    }
+
+    private fun applyAuth(requestBuilder: Request.Builder, credential: String) {
+        if (secureStorage.isApiKeyAuth) {
+            requestBuilder.header("X-Open-Wearables-API-Key", credential)
+        } else {
+            requestBuilder.header("Authorization", credential)
+        }
+    }
+
+    private fun emitAuthError(statusCode: Int) {
+        logger("Auth error: HTTP $statusCode - token invalid")
+        onAuthError?.invoke(statusCode, "Unauthorized - please re-authenticate")
+    }
+
+    fun retryOutboxIfPossible() { /* reserved for future use */ }
+
     // MARK: - Background Sync
 
-    /**
-     * Start background sync using WorkManager
-     */
-    suspend fun startBackgroundSync(baseUrl: String, customSyncUrl: String?): Boolean {
-        // Schedule periodic sync on main thread (WorkManager requirement)
+    suspend fun startBackgroundSync(host: String, customSyncUrl: String?): Boolean {
         withContext(Dispatchers.Main) {
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
 
             if (TESTING_MODE) {
-                // Testing mode: Use chained OneTimeWorkRequests for 1-minute intervals
-                // (WorkManager's PeriodicWorkRequest has a minimum of 15 minutes)
-                scheduleTestingSync(baseUrl, customSyncUrl, constraints)
-                logger("🧪 TESTING MODE: Scheduled sync every $TESTING_INTERVAL_MINUTES minute(s)")
+                scheduleTestingSync(host, customSyncUrl, constraints)
+                logger("TESTING MODE: Scheduled sync every $TESTING_INTERVAL_MINUTES minute(s)")
             } else {
-                // Production mode: Use standard 15-minute periodic sync
                 val periodicWork = PeriodicWorkRequestBuilder<HealthSyncWorker>(
-                    15, TimeUnit.MINUTES,
-                    5, TimeUnit.MINUTES
+                    15, TimeUnit.MINUTES, 5, TimeUnit.MINUTES
                 )
                     .setConstraints(constraints)
-                    .setInputData(
-                        workDataOf(
-                            HealthSyncWorker.KEY_BASE_URL to baseUrl,
-                            HealthSyncWorker.KEY_CUSTOM_SYNC_URL to customSyncUrl
-                        )
-                    )
+                    .setInputData(workDataOf(
+                        HealthSyncWorker.KEY_HOST to host,
+                        HealthSyncWorker.KEY_CUSTOM_SYNC_URL to customSyncUrl
+                    ))
                     .build()
 
-                WorkManager.getInstance(context)
-                    .enqueueUniquePeriodicWork(
-                        WORK_NAME_PERIODIC,
-                        ExistingPeriodicWorkPolicy.UPDATE,
-                        periodicWork
-                    )
-
-                logger("📅 Scheduled periodic sync every 15 minutes")
+                WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                    WORK_NAME_PERIODIC, ExistingPeriodicWorkPolicy.UPDATE, periodicWork
+                )
+                logger("Scheduled periodic sync every 15 minutes")
             }
         }
 
-        // Initial sync
-        syncNow(baseUrl, customSyncUrl, fullExport = !hasCompletedInitialSync())
-
+        syncNow(host, customSyncUrl, fullExport = !hasCompletedInitialSync())
         return true
     }
-    
-    /**
-     * Schedule testing sync with 1-minute intervals using chained OneTimeWorkRequests
-     */
-    private fun scheduleTestingSync(baseUrl: String, customSyncUrl: String?, constraints: Constraints) {
+
+    private fun scheduleTestingSync(host: String, customSyncUrl: String?, constraints: Constraints) {
         val oneTimeWork = OneTimeWorkRequestBuilder<HealthSyncWorker>()
             .setConstraints(constraints)
             .setInitialDelay(TESTING_INTERVAL_MINUTES, TimeUnit.MINUTES)
-            .setInputData(
-                workDataOf(
-                    HealthSyncWorker.KEY_BASE_URL to baseUrl,
-                    HealthSyncWorker.KEY_CUSTOM_SYNC_URL to customSyncUrl,
-                    HealthSyncWorker.KEY_TESTING_MODE to true
-                )
-            )
+            .setInputData(workDataOf(
+                HealthSyncWorker.KEY_HOST to host,
+                HealthSyncWorker.KEY_CUSTOM_SYNC_URL to customSyncUrl,
+                HealthSyncWorker.KEY_TESTING_MODE to true
+            ))
             .build()
 
-        WorkManager.getInstance(context)
-            .enqueueUniqueWork(
-                WORK_NAME_TESTING,
-                ExistingWorkPolicy.REPLACE,
-                oneTimeWork
-            )
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            WORK_NAME_TESTING, ExistingWorkPolicy.REPLACE, oneTimeWork
+        )
     }
-    
-    /**
-     * Schedule an expedited one-time sync (for when app goes to background)
-     */
-    fun scheduleExpeditedSync(baseUrl: String, customSyncUrl: String?) {
+
+    fun scheduleExpeditedSync(host: String, customSyncUrl: String?) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
@@ -184,470 +177,264 @@ class SyncManager(
         val expeditedWork = OneTimeWorkRequestBuilder<HealthSyncWorker>()
             .setConstraints(constraints)
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-            .setInputData(
-                workDataOf(
-                    HealthSyncWorker.KEY_BASE_URL to baseUrl,
-                    HealthSyncWorker.KEY_CUSTOM_SYNC_URL to customSyncUrl
-                )
-            )
+            .setInputData(workDataOf(
+                HealthSyncWorker.KEY_HOST to host,
+                HealthSyncWorker.KEY_CUSTOM_SYNC_URL to customSyncUrl
+            ))
             .build()
 
-        WorkManager.getInstance(context)
-            .enqueueUniqueWork(
-                "health_sync_expedited",
-                ExistingWorkPolicy.REPLACE,
-                expeditedWork
-            )
-        
-        logger("🚀 Scheduled expedited sync")
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "health_sync_expedited", ExistingWorkPolicy.REPLACE, expeditedWork
+        )
+        logger("Scheduled expedited sync")
     }
 
-    /**
-     * Stop background sync
-     */
     suspend fun stopBackgroundSync() {
         withContext(Dispatchers.Main) {
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME_PERIODIC)
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME_TESTING)
-            logger("🛑 Cancelled periodic sync")
+            logger("Cancelled periodic sync")
         }
     }
 
     // MARK: - Sync Now
 
-    /**
-     * Perform sync now with session management and resume capability
-     */
-    suspend fun syncNow(baseUrl: String, customSyncUrl: String?, fullExport: Boolean) {
+    suspend fun syncNow(host: String, customSyncUrl: String?, fullExport: Boolean) {
         if (isSyncing) {
-            logger("⏭️ Sync already in progress")
+            logger("Sync already in progress")
             return
         }
 
         isSyncing = true
-
         try {
             val userId = secureStorage.getUserId()
-            var accessToken = secureStorage.getAccessToken()
-
-            if (userId == null || accessToken == null) {
-                logger("❌ No credentials for sync")
+            if (userId == null || !secureStorage.hasAuth) {
+                logger("No credentials for sync")
                 return
             }
 
-            // Refresh token if needed
-            if (secureStorage.isTokenExpired()) {
-                val refreshed = refreshToken()
-                if (!refreshed) {
-                    logger("❌ Token refresh failed")
-                    return
-                }
-                accessToken = secureStorage.getAccessToken()
-            }
+            val endpoint = buildSyncEndpoint(host, customSyncUrl, userId, healthProvider.providerId)
 
-            val endpoint = buildSyncEndpoint(baseUrl, customSyncUrl, userId)
-            
-            // Get tracked types as list for indexed access
-            val trackedTypes = healthManager.getTrackedTypes().toList()
+            val trackedTypes = healthProvider.getTrackedTypes().toList()
             if (trackedTypes.isEmpty()) {
-                logger("⚠️ No tracked types configured")
+                logger("No tracked types configured")
                 return
             }
 
-            // Check if we're resuming an interrupted sync
             val existingState = loadSyncState()
             val isResuming = existingState != null && existingState.hasProgress
-            
+
             if (isResuming) {
-                logger("🔄 Resuming sync (${existingState!!.totalSentCount} already sent, ${existingState.completedTypes.size} types done)")
+                logger("Resuming sync (${existingState!!.totalSentCount} already sent, ${existingState.completedTypes.size} types done)")
             } else {
-                logger("🔄 Starting streaming sync (fullExport: $fullExport, ${trackedTypes.size} types)")
+                logger("Starting streaming sync (fullExport: $fullExport, ${trackedTypes.size} types, provider: ${healthProvider.providerId})")
                 startNewSyncState(fullExport, trackedTypes)
             }
-            
-            // Get starting index for resume
-            val startIndex = if (isResuming) getResumeTypeIndex() else 0
-            
-            // Process types sequentially
+
             processTypesSequentially(
                 types = trackedTypes,
-                typeIndex = startIndex,
+                typeIndex = if (isResuming) getResumeTypeIndex() else 0,
                 fullExport = fullExport,
-                endpoint = endpoint,
-                token = accessToken!!
+                endpoint = endpoint
             )
-            
         } finally {
             isSyncing = false
         }
     }
-    
-    /**
-     * Process types one by one - streaming approach
-     */
+
     private suspend fun processTypesSequentially(
         types: List<String>,
         typeIndex: Int,
         fullExport: Boolean,
-        endpoint: String,
-        token: String
+        endpoint: String
     ) {
         if (typeIndex >= types.size) {
-            // All types processed
             finalizeSyncState()
             return
         }
-        
+
         val type = types[typeIndex]
-        
-        // Skip already completed types
         if (!shouldSyncType(type)) {
-            logger("⏭️ Skipping $type - already synced")
-            processTypesSequentially(types, typeIndex + 1, fullExport, endpoint, token)
+            logger("Skipping $type - already synced")
+            processTypesSequentially(types, typeIndex + 1, fullExport, endpoint)
             return
         }
-        
-        // Update current type index for resume
+
         updateCurrentTypeIndex(typeIndex)
-        
-        // Process this type
-        val success = processType(type, fullExport, endpoint, token)
-        
+        val success = processType(type, fullExport, endpoint)
         if (success) {
-            // Continue to next type
-            processTypesSequentially(types, typeIndex + 1, fullExport, endpoint, token)
+            processTypesSequentially(types, typeIndex + 1, fullExport, endpoint)
         } else {
-            // Failed - will resume from this type later
-            logger("⚠️ Sync paused at $type, will resume later")
+            logger("Sync paused at $type, will resume later")
         }
     }
-    
-    /**
-     * Process a single type - fetch and send data
-     */
-    private suspend fun processType(
-        type: String,
-        fullExport: Boolean,
-        endpoint: String,
-        token: String
-    ): Boolean {
+
+    private suspend fun processType(type: String, fullExport: Boolean, endpoint: String): Boolean {
         val anchors = if (fullExport) emptyMap() else loadAnchors()
         val anchor = anchors[type]
-        
-        logger("📊 $type: querying...")
-        
-        // Read data for this type using existing readData method
-        val data = healthManager.readData(type, anchor, CHUNK_SIZE)
-        
-        if (data.isEmpty()) {
-            logger("  $type: ✓ complete (no new data)")
+
+        logger("$type: querying (provider: ${healthProvider.providerId})...")
+
+        val result = healthProvider.readData(type, anchor, CHUNK_SIZE)
+
+        if (result.data.isEmpty) {
+            logger("  $type: complete (no new data)")
             updateTypeProgress(type, 0, isComplete = true, anchorTimestamp = null)
             return true
         }
-        
-        logger("  $type: ${data.size} samples")
-        
-        // Build payload for this type
-        val payload = buildPayload(mapOf(type to data))
-        
-        // Get max timestamp for anchor (use endTime, fallback to startTime)
-        val maxTimestamp = data.maxOfOrNull { it.endTime ?: it.startTime }
-        
-        // Send data
-        val success = sendData(endpoint, token, payload)
-        
+
+        val count = result.data.totalCount
+        logger("  $type: $count items")
+
+        val payload = buildPayload(result.data)
+        val success = sendDataWithAuthRetry(endpoint, payload)
+
         if (success) {
-            // Update progress
-            updateTypeProgress(type, data.size, isComplete = true, anchorTimestamp = maxTimestamp)
-            logger("  $type: ✓ sent ${data.size} records")
+            updateTypeProgress(type, count, isComplete = true, anchorTimestamp = result.maxTimestamp)
+            logger("  $type: sent $count items")
             return true
         } else {
-            logger("  $type: ❌ upload failed")
+            logger("  $type: upload failed")
             return false
         }
     }
 
+    // MARK: - Payload (unified)
+
+    private fun buildPayload(data: UnifiedHealthData): Map<String, Any> = mapOf(
+        "provider" to healthProvider.providerId,
+        "sdkVersion" to SDK_VERSION,
+        "syncTimestamp" to UnifiedTimestamp.fromEpochMs(System.currentTimeMillis()),
+        "data" to data.toDataMap()
+    )
+
     // MARK: - Token Refresh
 
-    private suspend fun refreshToken(): Boolean = withContext(Dispatchers.IO) {
-        if (!secureStorage.hasRefreshCredentials()) {
-            logger("⚠️ No refresh credentials available")
-            return@withContext false
-        }
-
-        val appId = secureStorage.getAppId()
-        val appSecret = secureStorage.getAppSecret()
-        val baseUrl = secureStorage.getBaseUrl()
-        val userId = secureStorage.getUserId()
-
-        if (appId == null || appSecret == null || baseUrl == null || userId == null) {
-            return@withContext false
-        }
-
-        logger("🔄 Refreshing token...")
-
+    private suspend fun attemptTokenRefresh(): Boolean = withContext(Dispatchers.IO) {
+        tokenRefreshLock.withLock { isRefreshingToken = true }
         try {
-            val url = "$baseUrl/api/v1/users/$userId/token"
-            val bodyMap = mapOf("app_id" to appId, "app_secret" to appSecret)
-            val body = gson.toJson(bodyMap)
-            
-            // Log request (mask secret)
-            val logBody = mapOf("app_id" to appId, "app_secret" to "${appSecret.take(4)}***")
-            logger("📤 Token refresh request: $url")
-            logger("📋 REQUEST PAYLOAD: ${gson.toJson(logBody)}")
-            
+            val refreshToken = secureStorage.getRefreshToken()
+            val apiBaseUrl = secureStorage.apiBaseUrl
+            if (refreshToken == null || apiBaseUrl == null) {
+                logger("No refresh token or host - cannot refresh")
+                return@withContext false
+            }
+
+            logger("Attempting token refresh...")
+            val url = "$apiBaseUrl/token/refresh"
+            val body = gson.toJson(mapOf("refresh_token" to refreshToken))
             val request = Request.Builder()
                 .url(url)
                 .post(body.toRequestBody("application/json".toMediaType()))
+                .header("Content-Type", "application/json")
                 .build()
 
             val response = httpClient.newCall(request).execute()
             val responseBody = response.body?.string()
-            
-            logger("📥 RESPONSE [${response.code}]: $responseBody")
-            
-            if (response.isSuccessful) {
+
+            if (response.isSuccessful && responseBody != null) {
                 @Suppress("UNCHECKED_CAST")
                 val json = gson.fromJson(responseBody, Map::class.java) as? Map<String, Any>
-                val newToken = json?.get("access_token") as? String
-
-                if (newToken != null) {
-                    val fullToken = if (newToken.startsWith("Bearer ")) newToken else "Bearer $newToken"
-                    secureStorage.saveCredentials(userId, fullToken)
-                    secureStorage.saveTokenExpiry(System.currentTimeMillis() + 60 * 60 * 1000)
-                    logger("✅ Token refreshed")
+                val newAccessToken = json?.get("access_token") as? String
+                if (newAccessToken != null) {
+                    secureStorage.updateTokens(newAccessToken, json["refresh_token"] as? String)
+                    logger("Token refreshed successfully")
                     return@withContext true
                 }
             }
-
-            logger("❌ Token refresh failed: ${response.code}")
-            return@withContext false
+            logger("Token refresh failed: HTTP ${response.code}")
+            false
         } catch (e: Exception) {
-            logger("❌ Token refresh error: ${e.message}")
-            return@withContext false
+            logger("Token refresh error: ${e.message}")
+            false
+        } finally {
+            tokenRefreshLock.withLock { isRefreshingToken = false }
         }
     }
 
-    // MARK: - Data Sending
+    // MARK: - Send with Auth Retry
 
-    // Pretty-printing Gson for logging
-    private val prettyGson = com.google.gson.GsonBuilder().setPrettyPrinting().create()
-
-    private suspend fun sendData(endpoint: String, accessToken: String, payload: Map<String, Any>): Boolean = 
+    private suspend fun sendDataWithAuthRetry(endpoint: String, payload: Map<String, Any>): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 val jsonBody = gson.toJson(payload)
                 val prettyJson = prettyGson.toJson(payload)
-                
-                logger("📊 Payload size: ${jsonBody.length / 1024} KB")
-                logger("📤 Endpoint: $endpoint")
-                logger("🔑 Authorization: ${accessToken.take(20)}...")
-                logger("📋 REQUEST PAYLOAD:\n$prettyJson")
 
-                val request = Request.Builder()
+                logger("Payload size: ${jsonBody.length / 1024} KB")
+                logger("Endpoint: $endpoint")
+                logger("REQUEST PAYLOAD:\n$prettyJson")
+
+                val requestBuilder = Request.Builder()
                     .url(endpoint)
                     .post(jsonBody.toRequestBody("application/json".toMediaType()))
-                    .header("Authorization", accessToken)
                     .header("Content-Type", "application/json")
-                    .build()
+                applyAuth(requestBuilder)
 
-                val response = httpClient.newCall(request).execute()
+                val response = httpClient.newCall(requestBuilder.build()).execute()
                 val responseBody = response.body?.string()
-                
-                logger("📥 RESPONSE [${response.code}]: $responseBody")
-                
-                if (response.isSuccessful) {
-                    return@withContext true
-                } else {
-                    logger("❌ Upload failed: ${response.code} - ${response.message}")
-                    return@withContext false
-                }
+                logger("RESPONSE [${response.code}]: $responseBody")
+
+                if (response.isSuccessful) return@withContext true
+                if (response.code == 401) return@withContext handle401(endpoint, jsonBody)
+
+                logger("Upload failed: ${response.code} - ${response.message} (continuing sync anyway)")
+                true
             } catch (e: Exception) {
-                logger("❌ Upload error: ${e.message}")
-                return@withContext false
+                logger("Upload error: ${e.message}")
+                false
             }
         }
 
-    // MARK: - Payload Building (Universal structure)
+    private suspend fun handle401(endpoint: String, jsonBody: String): Boolean {
+        if (secureStorage.isApiKeyAuth) {
+            emitAuthError(401)
+            return false
+        }
 
-    /**
-     * Build payload with UNIVERSAL structure for all data types.
-     * Follows Open Wearables Samsung Health SDK integration spec.
-     * 
-     * Top level: { provider, sdk_version, app_version, data }
-     * records[]: { uid, dataType, startTime, endTime, dataSource, device, values[] }
-     * workouts[]: { uid, dataType, exerciseType, startTime, endTime, dataSource, device, values[], sessions[] }
-     * sleep[]:    { uid, dataType, startTime, endTime, dataSource, device, values[], stages[] }
-     */
-    private fun buildPayload(data: Map<String, List<HealthDataRecord>>): Map<String, Any> {
-        val records = mutableListOf<Map<String, Any?>>()
-        val workouts = mutableListOf<Map<String, Any?>>()
-        val sleep = mutableListOf<Map<String, Any?>>()
+        if (attemptTokenRefresh()) {
+            val newCredential = secureStorage.authCredential
+            if (newCredential != null) {
+                logger("Retrying upload with refreshed token...")
+                return try {
+                    val retryBuilder = Request.Builder()
+                        .url(endpoint)
+                        .post(jsonBody.toRequestBody("application/json".toMediaType()))
+                        .header("Content-Type", "application/json")
+                    applyAuth(retryBuilder, newCredential)
 
-        for ((flutterTypeId, typeRecords) in data) {
-            for (record in typeRecords) {
-                // Common base for all samples
-                val baseSample = mapOf(
-                    "uid" to record.uid,
-                    "dataType" to record.dataType,
-                    "startTime" to record.startTime,
-                    "endTime" to record.endTime,
-                    "dataSource" to mapOf(
-                        "appId" to record.dataSource.appId,
-                        "deviceId" to record.dataSource.deviceId
-                    ),
-                    "device" to mapOf(
-                        "deviceId" to record.device.deviceId,
-                        "manufacturer" to record.device.manufacturer,
-                        "model" to record.device.model,
-                        "name" to record.device.name,
-                        "brand" to record.device.brand,
-                        "product" to record.device.product,
-                        "osType" to record.device.osType,
-                        "osVersion" to record.device.osVersion,
-                        "sdkVersion" to record.device.sdkVersion,
-                        "deviceType" to record.device.deviceType,
-                        "isSourceDevice" to record.device.isSourceDevice
-                    )
-                )
+                    val retryResponse = httpClient.newCall(retryBuilder.build()).execute()
+                    val retryBody = retryResponse.body?.string()
+                    logger("Retry RESPONSE [${retryResponse.code}]: $retryBody")
 
-                when (flutterTypeId) {
-                    "workout" -> workouts.add(buildWorkoutSample(baseSample, record))
-                    "sleep" -> sleep.add(buildSleepSample(baseSample, record))
-                    else -> records.add(buildRecordSample(baseSample, record))
+                    if (retryResponse.isSuccessful) true
+                    else { emitAuthError(401); false }
+                } catch (e: Exception) {
+                    emitAuthError(401); false
                 }
             }
         }
-
-        return mapOf(
-            "data" to mapOf(
-                "records" to records,
-                "workouts" to workouts,
-                "sleep" to sleep
-            )
-        )
-    }
-    
-    /**
-     * Build UNIVERSAL record sample structure.
-     * All records have the same keys: values[] array with {type, value}
-     */
-    private fun buildRecordSample(base: Map<String, Any?>, record: HealthDataRecord): Map<String, Any?> {
-        val sample = base.toMutableMap()
-        
-        // Convert fields map to universal values array
-        sample["values"] = record.fields.map { (key, value) ->
-            mapOf("type" to key, "value" to value)
-        }
-        
-        return sample
-    }
-    
-    /**
-     * Build UNIVERSAL workout sample structure.
-     * All workouts have: dataType="EXERCISE", exerciseType, values[], sessions[]
-     */
-    private fun buildWorkoutSample(base: Map<String, Any?>, record: HealthDataRecord): Map<String, Any?> {
-        val sample = base.toMutableMap()
-        
-        // Set dataType to "EXERCISE" for workouts
-        sample["dataType"] = "EXERCISE"
-        
-        // Extract exerciseType to top level (always present for workouts)
-        sample["exerciseType"] = record.fields["EXERCISE_TYPE"] ?: "UNKNOWN"
-        
-        // Extract sessions separately
-        val sessions = record.fields["SESSIONS"] as? List<*> ?: emptyList<Any>()
-        sample["sessions"] = sessions.map { session ->
-            if (session is Map<*, *>) {
-                // Convert session fields to universal format
-                val sessionValues = session.entries
-                    .filter { it.key != null && it.value != null }
-                    .map { (key, value) ->
-                        mapOf("type" to key.toString(), "value" to value)
-                    }
-                mapOf("values" to sessionValues)
-            } else {
-                mapOf("values" to emptyList<Any>())
-            }
-        }
-        
-        // All other fields as values array (excluding SESSIONS and EXERCISE_TYPE)
-        sample["values"] = record.fields
-            .filter { it.key != "SESSIONS" && it.key != "EXERCISE_TYPE" }
-            .map { (key, value) ->
-                mapOf("type" to key, "value" to value)
-            }
-        
-        return sample
-    }
-    
-    /**
-     * Build UNIVERSAL sleep sample structure.
-     * All sleep records have: dataType="SLEEP", values[], stages[]
-     */
-    private fun buildSleepSample(base: Map<String, Any?>, record: HealthDataRecord): Map<String, Any?> {
-        val sample = base.toMutableMap()
-        
-        // Set dataType to "SLEEP" for sleep records
-        sample["dataType"] = "SLEEP"
-        
-        // Extract sessions/stages separately
-        val sessions = record.fields["SESSIONS"] as? List<*> ?: emptyList<Any>()
-        val stages = mutableListOf<Map<String, Any?>>()
-        
-        for (session in sessions) {
-            if (session is Map<*, *>) {
-                // Look for sleepStages in session
-                val sleepStages = session["sleepStages"] as? List<*>
-                if (sleepStages != null) {
-                    for (stage in sleepStages) {
-                        if (stage is Map<*, *>) {
-                            // Stage value uppercase
-                            val stageValue = (stage["stage"] ?: "UNKNOWN").toString().uppercase()
-                            stages.add(mapOf(
-                                "stage" to stageValue,
-                                "startTime" to stage["startTime"],
-                                "endTime" to stage["endTime"]
-                            ))
-                        }
-                    }
-                }
-            }
-        }
-        sample["stages"] = stages
-        
-        // All other fields as values array (excluding SESSIONS)
-        sample["values"] = record.fields
-            .filter { it.key != "SESSIONS" }
-            .map { (key, value) ->
-                mapOf("type" to key, "value" to value)
-            }
-        
-        return sample
+        emitAuthError(401)
+        return false
     }
 
-    private fun buildSyncEndpoint(baseUrl: String, customSyncUrl: String?, userId: String, provider: String = currentProvider): String {
+    // MARK: - Sync Endpoint
+
+    private fun buildSyncEndpoint(host: String, customSyncUrl: String?, userId: String, provider: String): String {
         if (customSyncUrl != null) {
-            // If custom URL contains placeholders, use it directly
             if (customSyncUrl.contains("{user_id}") || customSyncUrl.contains("{userId}") || customSyncUrl.contains("{provider}")) {
                 return customSyncUrl
                     .replace("{userId}", userId)
                     .replace("{user_id}", userId)
                     .replace("{provider}", provider)
             }
-            // Otherwise treat as base URL and append path
             val normalizedBase = customSyncUrl.trimEnd('/')
             return "$normalizedBase/sdk/users/$userId/sync/$provider"
         }
-        return "$baseUrl/api/v1/sdk/users/$userId/sync/$provider"
+        val h = if (host.endsWith("/")) host.dropLast(1) else host
+        return "$h/api/v1/sdk/users/$userId/sync/$provider"
     }
 
-    // MARK: - Anchors (timestamps for incremental sync)
-
-    private fun anchorKey(type: String): String = "anchor.${userKey()}.$type"
-    
-    private fun fullDoneKey(): String = "fullDone.${userKey()}"
+    // MARK: - Anchors
 
     private fun loadAnchors(): Map<String, Long> {
         val json = syncPrefs.getString(KEY_ANCHORS, null) ?: return emptyMap()
@@ -655,16 +442,13 @@ class SyncManager(
             @Suppress("UNCHECKED_CAST")
             val map = gson.fromJson(json, Map::class.java) as? Map<String, Double>
             map?.mapValues { it.value.toLong() } ?: emptyMap()
-        } catch (e: Exception) {
-            emptyMap()
-        }
+        } catch (_: Exception) { emptyMap() }
     }
-    
+
     private fun saveAnchor(type: String, timestamp: Long) {
-        val currentAnchors = loadAnchors().toMutableMap()
-        currentAnchors[type] = timestamp
-        val json = gson.toJson(currentAnchors)
-        syncPrefs.edit().putString(KEY_ANCHORS, json).apply()
+        val current = loadAnchors().toMutableMap()
+        current[type] = timestamp
+        syncPrefs.edit().putString(KEY_ANCHORS, gson.toJson(current)).apply()
     }
 
     fun resetAnchors() {
@@ -673,173 +457,94 @@ class SyncManager(
             .putBoolean(fullDoneKey(), false)
             .apply()
         clearSyncSession()
-        logger("🔄 Anchors reset - will perform full sync on next sync")
+        logger("Anchors reset - will perform full sync on next sync")
     }
 
-    private fun hasCompletedInitialSync(): Boolean {
-        return syncPrefs.getBoolean(fullDoneKey(), false)
-    }
-    
-    private fun markFullExportDone() {
-        syncPrefs.edit().putBoolean(fullDoneKey(), true).apply()
-    }
+    private fun fullDoneKey(): String = "fullDone.${userKey()}"
+    private fun hasCompletedInitialSync(): Boolean = syncPrefs.getBoolean(fullDoneKey(), false)
+    private fun markFullExportDone() { syncPrefs.edit().putBoolean(fullDoneKey(), true).apply() }
 
-    // MARK: - Sync State File Management
-    
-    private fun syncStateDir(): File {
-        return File(context.filesDir, SYNC_STATE_DIR).also { 
-            if (!it.exists()) it.mkdirs() 
-        }
-    }
-    
+    // MARK: - Sync State
+
+    private fun syncStateDir(): File = File(context.filesDir, SYNC_STATE_DIR).also { if (!it.exists()) it.mkdirs() }
     private fun syncStateFile(): File = File(syncStateDir(), SYNC_STATE_FILE)
-    
-    // MARK: - Save/Load Sync State
-    
+
     private fun saveSyncState(state: SyncState) {
         try {
             val json = gson.toJson(state)
-            // Validate JSON before saving
             if (json.isNotBlank() && json.startsWith("{")) {
                 val file = syncStateFile()
-                // Write to temp file first, then rename (atomic write)
                 val tempFile = File(file.parent, "${file.name}.tmp")
                 tempFile.writeText(json)
                 tempFile.renameTo(file)
             }
         } catch (e: Exception) {
-            logger("❌ Failed to save sync state: ${e.message}")
+            logger("Failed to save sync state: ${e.message}")
         }
     }
-    
+
     private fun loadSyncState(): SyncState? {
         return try {
             val file = syncStateFile()
             if (!file.exists()) return null
-            
             val json = file.readText()
-            if (json.isBlank()) {
-                file.delete()
-                return null
-            }
-            
+            if (json.isBlank()) { file.delete(); return null }
             val state = gson.fromJson(json, SyncState::class.java)
-            
-            // Verify state belongs to current user
-            if (state == null || state.userKey != userKey()) {
-                logger("⚠️ Sync state invalid or for different user, clearing")
-                clearSyncSession()
-                return null
-            }
-            
+            if (state == null || state.userKey != userKey()) { clearSyncSession(); return null }
             state
         } catch (e: Exception) {
-            // Clear corrupted state file
-            logger("⚠️ Corrupted sync state, clearing: ${e.message}")
-            try {
-                syncStateFile().delete()
-            } catch (deleteError: Exception) {
-                // Ignore delete errors
-            }
+            logger("Corrupted sync state, clearing: ${e.message}")
+            try { syncStateFile().delete() } catch (_: Exception) {}
             null
         }
     }
-    
-    // MARK: - Start New Sync State
-    
+
     private fun startNewSyncState(fullExport: Boolean, types: List<String>): SyncState {
         val state = SyncState(
-            userKey = userKey(),
-            fullExport = fullExport,
-            createdAt = System.currentTimeMillis(),
-            typeProgress = mutableMapOf(),
-            totalSentCount = 0,
-            completedTypes = mutableSetOf(),
-            currentTypeIndex = 0
+            userKey = userKey(), fullExport = fullExport,
+            createdAt = System.currentTimeMillis()
         )
-        
         saveSyncState(state)
         return state
     }
-    
-    // MARK: - Update Progress
-    
-    /**
-     * Update progress for a specific type after sending a chunk
-     */
+
     private fun updateTypeProgress(typeIdentifier: String, sentInChunk: Int, isComplete: Boolean, anchorTimestamp: Long?) {
         val state = loadSyncState() ?: return
-        
-        var progress = state.typeProgress[typeIdentifier] ?: TypeSyncProgress(
-            typeIdentifier = typeIdentifier,
-            sentCount = 0,
-            isComplete = false,
-            pendingAnchorTimestamp = null
-        )
-        
+        var progress = state.typeProgress[typeIdentifier] ?: TypeSyncProgress(typeIdentifier)
         progress.sentCount += sentInChunk
         progress.isComplete = isComplete
-        if (anchorTimestamp != null) {
-            progress.pendingAnchorTimestamp = anchorTimestamp
-        }
-        
+        if (anchorTimestamp != null) progress.pendingAnchorTimestamp = anchorTimestamp
         state.typeProgress[typeIdentifier] = progress
         state.totalSentCount += sentInChunk
-        
         if (isComplete) {
             state.completedTypes.add(typeIdentifier)
-            // Save anchor immediately when type is complete
-            progress.pendingAnchorTimestamp?.let { timestamp ->
-                saveAnchor(typeIdentifier, timestamp)
-            }
+            progress.pendingAnchorTimestamp?.let { saveAnchor(typeIdentifier, it) }
         }
-        
         saveSyncState(state)
     }
-    
-    /**
-     * Mark current type index for resume
-     */
+
     private fun updateCurrentTypeIndex(index: Int) {
         val state = loadSyncState() ?: return
         state.currentTypeIndex = index
         saveSyncState(state)
     }
-    
-    // MARK: - Finalize Sync
-    
+
     private fun finalizeSyncState() {
         val state = loadSyncState() ?: return
-        
-        // Mark full export as complete if needed
         if (state.fullExport) {
             markFullExportDone()
-            logger("✅ Marked full export complete")
+            logger("Marked full export complete")
         }
-        
-        logger("✅ Sync complete: ${state.totalSentCount} samples across ${state.completedTypes.size} types")
-        
-        // Clear state
+        logger("Sync complete: ${state.totalSentCount} items across ${state.completedTypes.size} types")
         clearSyncSession()
     }
 
-    // MARK: - Sync Session Management
-    
-    /**
-     * Check if a specific type needs to be synced (not yet completed)
-     */
     private fun shouldSyncType(typeIdentifier: String): Boolean {
         val state = loadSyncState() ?: return true
         return !state.completedTypes.contains(typeIdentifier)
     }
-    
-    /**
-     * Get the starting type index for resume
-     */
-    private fun getResumeTypeIndex(): Int {
-        val state = loadSyncState() ?: return 0
-        return state.currentTypeIndex
-    }
+
+    private fun getResumeTypeIndex(): Int = loadSyncState()?.currentTypeIndex ?: 0
 
     fun getSyncStatus(): Map<String, Any?> {
         val state = loadSyncState()
@@ -862,31 +567,29 @@ class SyncManager(
         }
     }
 
-    fun hasResumableSyncSession(): Boolean {
-        val state = loadSyncState() ?: return false
-        return state.hasProgress
-    }
+    fun hasResumableSyncSession(): Boolean = loadSyncState()?.hasProgress == true
 
     fun clearSyncSession() {
         try {
             syncStateFile().delete()
-            logger("🧹 Cleared sync state")
+            logger("Cleared sync state")
         } catch (e: Exception) {
-            logger("❌ Failed to clear sync state: ${e.message}")
+            logger("Failed to clear sync state: ${e.message}")
         }
     }
 }
 
-/**
- * WorkManager worker for background health sync
- */
+// ---------------------------------------------------------------------------
+// WorkManager worker
+// ---------------------------------------------------------------------------
+
 class HealthSyncWorker(
     context: Context,
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
 
     companion object {
-        const val KEY_BASE_URL = "baseUrl"
+        const val KEY_HOST = "host"
         const val KEY_CUSTOM_SYNC_URL = "customSyncUrl"
         const val KEY_TESTING_MODE = "testingMode"
         private const val NOTIFICATION_ID = 9001
@@ -896,81 +599,68 @@ class HealthSyncWorker(
     }
 
     override suspend fun doWork(): Result {
-        val baseUrl = inputData.getString(KEY_BASE_URL) ?: return Result.failure()
+        val host = inputData.getString(KEY_HOST) ?: return Result.failure()
         val customSyncUrl = inputData.getString(KEY_CUSTOM_SYNC_URL)
         val isTestingMode = inputData.getBoolean(KEY_TESTING_MODE, false)
 
+        try {
+            setForeground(getForegroundInfo())
+            android.util.Log.d("HealthSyncWorker", "Running as foreground service")
+        } catch (e: Exception) {
+            android.util.Log.w("HealthSyncWorker", "Could not promote to foreground: ${e.message}")
+        }
+
         val secureStorage = SecureStorage(applicationContext)
-        val healthManager = SamsungHealthManager(applicationContext, null) { 
-            android.util.Log.d("HealthSyncWorker", it) 
-        }
-        val syncManager = SyncManager(applicationContext, secureStorage, healthManager) { 
-            android.util.Log.d("HealthSyncWorker", it) 
-        }
+        val provider = createProvider(applicationContext, secureStorage)
+        val syncManager = SyncManager(applicationContext, secureStorage, provider, {
+            android.util.Log.d("HealthSyncWorker", it)
+        })
 
         return try {
-            // Restore tracked types
             val trackedTypes = secureStorage.getTrackedTypes()
-            healthManager.setTrackedTypes(trackedTypes)
+            provider.setTrackedTypes(trackedTypes)
 
-            // Perform sync
-            android.util.Log.d("HealthSyncWorker", "🔄 Background sync triggered (testing mode: $isTestingMode)")
-            syncManager.syncNow(baseUrl, customSyncUrl, fullExport = false)
-            
-            // If in testing mode, schedule the next sync after 1 minute
-            if (isTestingMode) {
-                scheduleNextTestingSync(baseUrl, customSyncUrl)
-            }
-            
+            android.util.Log.d("HealthSyncWorker", "Background sync (provider: ${provider.providerId}, testing: $isTestingMode)")
+            syncManager.syncNow(host, customSyncUrl, fullExport = false)
+
+            if (isTestingMode) scheduleNextTestingSync(host, customSyncUrl)
             Result.success()
         } catch (e: Exception) {
             android.util.Log.e("HealthSyncWorker", "Sync failed", e)
-            
-            // Even if sync failed, reschedule in testing mode
-            if (isTestingMode) {
-                scheduleNextTestingSync(baseUrl, customSyncUrl)
-            }
-            
+            if (isTestingMode) scheduleNextTestingSync(host, customSyncUrl)
             Result.retry()
         }
     }
-    
-    /**
-     * Schedule the next testing sync after 1 minute
-     */
-    private fun scheduleNextTestingSync(baseUrl: String, customSyncUrl: String?) {
+
+    private fun createProvider(context: Context, storage: SecureStorage): HealthDataProvider {
+        val providerId = storage.getProvider()
+        val log: (String) -> Unit = { android.util.Log.d("HealthSyncWorker", it) }
+        return when (providerId) {
+            "health_connect" -> HealthConnectManager(context, null, log)
+            else -> SamsungHealthManager(context, null, log)
+        }
+    }
+
+    private fun scheduleNextTestingSync(host: String, customSyncUrl: String?) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
-
         val nextWork = OneTimeWorkRequestBuilder<HealthSyncWorker>()
             .setConstraints(constraints)
             .setInitialDelay(TESTING_INTERVAL_MINUTES, TimeUnit.MINUTES)
-            .setInputData(
-                workDataOf(
-                    KEY_BASE_URL to baseUrl,
-                    KEY_CUSTOM_SYNC_URL to customSyncUrl,
-                    KEY_TESTING_MODE to true
-                )
-            )
+            .setInputData(workDataOf(
+                KEY_HOST to host,
+                KEY_CUSTOM_SYNC_URL to customSyncUrl,
+                KEY_TESTING_MODE to true
+            ))
             .build()
-
-        WorkManager.getInstance(applicationContext)
-            .enqueueUniqueWork(
-                WORK_NAME_TESTING,
-                ExistingWorkPolicy.REPLACE,
-                nextWork
-            )
-        
-        android.util.Log.d("HealthSyncWorker", "🧪 Next testing sync scheduled in $TESTING_INTERVAL_MINUTES minute(s)")
+        WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+            WORK_NAME_TESTING, ExistingWorkPolicy.REPLACE, nextWork
+        )
     }
-    
-    /**
-     * Required for expedited work - provides foreground notification info
-     */
+
     override suspend fun getForegroundInfo(): ForegroundInfo {
         createNotificationChannel()
-        
         val notification = androidx.core.app.NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setContentTitle("Health Sync")
             .setContentText("Syncing health data...")
@@ -978,22 +668,20 @@ class HealthSyncWorker(
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .build()
-        
-        return ForegroundInfo(NOTIFICATION_ID, notification)
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            ForegroundInfo(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            ForegroundInfo(NOTIFICATION_ID, notification)
+        }
     }
-    
+
     private fun createNotificationChannel() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val channel = android.app.NotificationChannel(
-                CHANNEL_ID,
-                "Health Sync",
-                android.app.NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Background health data synchronization"
-            }
-            
-            val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-            notificationManager.createNotificationChannel(channel)
+                CHANNEL_ID, "Health Sync", android.app.NotificationManager.IMPORTANCE_LOW
+            ).apply { description = "Background health data synchronization" }
+            (applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                .createNotificationChannel(channel)
         }
     }
 }

@@ -57,7 +57,11 @@ android {
         // Samsung Health Data SDK - from local Maven repository
         // Original .aar from Samsung Developer Portal, republished to libs/maven/
         implementation("com.samsung.android.health:data:1.0.0")
-        
+
+        // Health Connect (Android)
+        implementation("androidx.health.connect:connect-client:1.1.0")
+        implementation("androidx.activity:activity-ktx:1.9.0")
+
         // Kotlin Coroutines
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
