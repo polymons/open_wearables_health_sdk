@@ -1,3 +1,7 @@
+## 0.0.8
+
+* Bumped native iOS SDK dependency from `~> 0.2.0` to `~> 0.3.0`.
+
 ## 0.0.7
 
 * **Breaking:** Replaced the embedded native iOS implementation with the [OpenWearablesHealthSDK](https://cocoapods.org/pods/OpenWearablesHealthSDK) CocoaPod (`~> 0.2.0`). The Flutter plugin is now a thin wrapper around the native iOS SDK.
