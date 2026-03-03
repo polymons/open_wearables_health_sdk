@@ -662,7 +662,7 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildProviderOption(AvailableProvider provider) {
     final isSelected = _selectedProviderId == provider.id;
-    final iconData = provider.id == 'samsung_health'
+    final iconData = provider.id == 'samsung'
         ? CupertinoIcons.device_phone_portrait
         : CupertinoIcons.heart_circle;
 
@@ -705,7 +705,7 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                   Text(
-                    provider.id == 'samsung_health'
+                    provider.id == 'samsung'
                         ? 'Samsung devices with Samsung Health'
                         : 'Universal Android health hub',
                     style: const TextStyle(fontSize: 14, color: OWColors.textMuted, letterSpacing: -0.1),

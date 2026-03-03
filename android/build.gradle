@@ -14,23 +14,19 @@ buildscript {
     }
 }
 
-allprojects {
+rootProject.allprojects {
     repositories {
-        google()
-        mavenCentral()
-        // Samsung Health SDK - local Maven repository
         maven {
-            url = uri("${project.projectDir}/libs/maven")
+            url = uri("https://jitpack.io")
         }
     }
 }
 
 apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
-apply plugin: "kotlin-parcelize"
 
 android {
-    namespace = "com.openwearables.health.sdk"
+    namespace = "com.openwearables.health.sdk.flutter"
 
     compileSdk = 36
 
@@ -49,39 +45,13 @@ android {
     }
 
     defaultConfig {
-        // Samsung Health SDK requires Android 10+ (API 29)
         minSdk = 29
     }
 
     dependencies {
-        // Samsung Health Data SDK - from local Maven repository
-        // Original .aar from Samsung Developer Portal, republished to libs/maven/
-        implementation("com.samsung.android.health:data:1.0.0")
+        // Open Wearables Health SDK (from GitHub via JitPack)
+        implementation("com.github.the-momentum.open_wearables_android_sdk:sdk:v0.1.0")
 
-        // Health Connect (Android)
-        implementation("androidx.health.connect:connect-client:1.1.0")
-        implementation("androidx.activity:activity-ktx:1.9.0")
-
-        // Kotlin Coroutines
-        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
-        
-        // WorkManager for background sync
-        implementation("androidx.work:work-runtime-ktx:2.9.0")
-        
-        // Lifecycle for detecting app foreground/background
-        implementation("androidx.lifecycle:lifecycle-process:2.7.0")
-        implementation("androidx.lifecycle:lifecycle-common:2.7.0")
-        
-        // Security for EncryptedSharedPreferences
-        implementation("androidx.security:security-crypto:1.1.0-alpha06")
-        
-        // Gson for JSON serialization
-        implementation("com.google.code.gson:gson:2.10.1")
-        
-        // OkHttp for network requests
-        implementation("com.squareup.okhttp3:okhttp:4.12.0")
-        
         // Testing
         testImplementation("org.jetbrains.kotlin:kotlin-test")
         testImplementation("org.mockito:mockito-core:5.0.0")

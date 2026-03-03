@@ -6,10 +6,10 @@ import 'dart:io';
 /// On Android, multiple providers may be supported.
 enum AndroidHealthProvider {
   /// Samsung Health SDK - works on Samsung devices with Samsung Health app v6.30.2+
-  samsungHealth('samsung_health', 'Samsung Health'),
+  samsungHealth('samsung', 'Samsung Health'),
 
   /// Health Connect - universal Android health data hub (API 28+, built-in on API 34+)
-  healthConnect('health_connect', 'Health Connect'),
+  healthConnect('google', 'Health Connect'),
   ;
 
   const AndroidHealthProvider(this.id, this.displayName);
