@@ -1,6 +1,7 @@
 import 'package:open_wearables_health_sdk/health_data_type.dart';
 import 'package:open_wearables_health_sdk/src/config.dart';
 import 'package:open_wearables_health_sdk/src/exceptions.dart';
+import 'package:open_wearables_health_sdk/src/provider.dart';
 import 'package:open_wearables_health_sdk/src/status.dart';
 import 'package:open_wearables_health_sdk/src/user.dart';
 
@@ -9,6 +10,7 @@ import 'open_wearables_health_sdk_platform_interface.dart';
 
 export 'package:open_wearables_health_sdk/src/config.dart';
 export 'package:open_wearables_health_sdk/src/exceptions.dart';
+export 'package:open_wearables_health_sdk/src/provider.dart';
 export 'package:open_wearables_health_sdk/src/status.dart';
 export 'package:open_wearables_health_sdk/src/user.dart';
 export 'open_wearables_health_sdk_method_channel.dart';
@@ -367,6 +369,44 @@ class OpenWearablesHealthSdk {
   /// To fully reset and re-export all data, use [resetAnchors] instead.
   static Future<void> clearSyncSession() async {
     await _platform.clearSyncSession();
+  }
+
+  // MARK: - Provider Selection (Android only)
+
+  /// Sets the health data provider on Android.
+  ///
+  /// On iOS this is a no-op — Apple HealthKit is the only provider.
+  /// On Android you can choose between [AndroidHealthProvider.samsungHealth]
+  /// and [AndroidHealthProvider.healthConnect].
+  ///
+  /// The provider is persisted across restarts. If never set, the SDK
+  /// auto-selects the first available provider (Samsung Health preferred
+  /// on Samsung devices, Health Connect elsewhere).
+  ///
+  /// Must be called after [configure] and before [startBackgroundSync].
+  ///
+  /// ```dart
+  /// await OpenWearablesHealthSdk.setProvider(AndroidHealthProvider.healthConnect);
+  /// ```
+  static Future<void> setProvider(AndroidHealthProvider provider) async {
+    await _platform.setProvider(providerId: provider.id);
+  }
+
+  /// Returns the list of health providers available on this device.
+  ///
+  /// On iOS this always returns an empty list. On Android it returns
+  /// providers whose backing app or API is installed and meets
+  /// minimum version requirements.
+  ///
+  /// ```dart
+  /// final providers = await OpenWearablesHealthSdk.getAvailableProviders();
+  /// for (final p in providers) {
+  ///   print('${p.displayName} (${p.id})');
+  /// }
+  /// ```
+  static Future<List<AvailableProvider>> getAvailableProviders() async {
+    final raw = await _platform.getAvailableProviders();
+    return raw.map((m) => AvailableProvider.fromMap(m)).toList();
   }
 
   // MARK: - Helpers

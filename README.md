@@ -1,17 +1,18 @@
-# Open Wearables Health SDK
+# Open Wearables Health SDK (Flutter)
 
-A Flutter plugin for secure background health data synchronization from Apple HealthKit (iOS) to your backend.
+A Flutter plugin for secure background health data synchronization from **Apple HealthKit** (iOS), **Samsung Health**, and **Health Connect** (Android) to your backend.
 
 > **Part of [Open Wearables](https://github.com/the-momentum/open-wearables)** - a self-hosted platform to unify wearable health data through one AI-ready API.
 
 ## Features
 
-- 🔐 **Token Authentication** - Sign in with accessToken + refreshToken, SDK handles refresh automatically
-- 📱 **Background Sync** - Health data syncs even when app is in background
-- 📦 **Incremental Updates** - Only syncs new data using anchored queries
-- 💾 **Secure Storage** - Credentials stored in iOS Keychain
-- 📊 **Wide Data Support** - Steps, heart rate, workouts, sleep, and more
-- 🌐 **Custom Host** - Point the SDK at any compatible backend
+- **Token Authentication** - Sign in with accessToken + refreshToken, SDK handles refresh automatically
+- **Background Sync** - Health data syncs even when app is in background
+- **Incremental Updates** - Only syncs new data using anchored queries
+- **Secure Storage** - Credentials stored in iOS Keychain / Android EncryptedSharedPreferences
+- **Wide Data Support** - Steps, heart rate, workouts, sleep, and more
+- **Custom Host** - Point the SDK at any compatible backend
+- **Multi-Provider (Android)** - Samsung Health and Health Connect supported
 
 ---
 
@@ -45,15 +46,73 @@ Add to `Info.plist`:
 </array>
 ```
 
-Enable HealthKit in Xcode → Target → Signing & Capabilities → + HealthKit.
+Enable HealthKit in Xcode: Target > Signing & Capabilities > + HealthKit.
+
+### 3. Android Configuration
+
+#### Set `minSdk` to 29
+
+In `android/app/build.gradle.kts`:
+
+```kotlin
+android {
+    defaultConfig {
+        minSdk = 29
+    }
+}
+```
+
+#### Add Health Connect permission aliases to `AndroidManifest.xml`
+
+In `android/app/src/main/AndroidManifest.xml`, inside the `<application>` tag:
+
+```xml
+<!-- Health Connect: permissions rationale (Android 14+) -->
+<activity-alias
+    android:name="ViewPermissionUsageActivity"
+    android:exported="true"
+    android:targetActivity=".MainActivity"
+    android:permission="android.permission.START_VIEW_PERMISSION_USAGE">
+    <intent-filter>
+        <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+        <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+    </intent-filter>
+</activity-alias>
+
+<!-- Health Connect: permissions rationale (Android 12-13) -->
+<activity-alias
+    android:name="ShowPermissionRationaleActivity"
+    android:exported="true"
+    android:targetActivity=".MainActivity">
+    <intent-filter>
+        <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+    </intent-filter>
+</activity-alias>
+```
+
+#### Use `FlutterFragmentActivity`
+
+In your `MainActivity.kt`, extend `FlutterFragmentActivity` instead of `FlutterActivity`:
+
+```kotlin
+import io.flutter.embedding.android.FlutterFragmentActivity
+
+class MainActivity : FlutterFragmentActivity()
+```
+
+This is required for Health Connect permission dialogs to work.
+
+#### Samsung Health
+
+Samsung Health is supported out of the box - the Samsung Health Data SDK is bundled in the Android SDK repository. No extra download needed.
+
+For testing on Samsung devices, enable Developer Mode in Samsung Health: Settings > About Samsung Health > tap version 10 times.
 
 ---
 
 ## SDK Usage
 
 ### 1. Configure (once at app start)
-
-The `host` parameter is required — provide just the host URL, the SDK appends `/api/v1/...` paths automatically.
 
 ```dart
 await OpenWearablesHealthSdk.configure(
@@ -88,7 +147,24 @@ final user = await OpenWearablesHealthSdk.signIn(
 );
 ```
 
-### 3. Request Permissions
+### 3. Select Provider (Android only)
+
+On Android, multiple health data providers may be available. Let the user choose:
+
+```dart
+import 'dart:io';
+
+if (Platform.isAndroid) {
+  final providers = await OpenWearablesHealthSdk.getAvailableProviders();
+  // Show UI to let user pick a provider
+  // providers = [AvailableProvider(samsung, Samsung Health), AvailableProvider(google, Health Connect)]
+
+  await OpenWearablesHealthSdk.setProvider(AndroidHealthProvider.healthConnect);
+  // or: await OpenWearablesHealthSdk.setProvider(AndroidHealthProvider.samsungHealth);
+}
+```
+
+### 4. Request Permissions
 
 ```dart
 final authorized = await OpenWearablesHealthSdk.requestAuthorization(
@@ -101,40 +177,43 @@ final authorized = await OpenWearablesHealthSdk.requestAuthorization(
 );
 ```
 
-### 4. Start Background Sync
+### 5. Start Background Sync
 
 ```dart
 await OpenWearablesHealthSdk.startBackgroundSync();
 ```
 
-### 5. Check Sync Status (optional)
+### 6. Listen to Logs and Auth Errors (optional)
 
 ```dart
-final status = await OpenWearablesHealthSdk.getSyncStatus();
-if (status['hasResumableSession'] == true) {
-  print('Sync interrupted, ${status['sentCount']} records already sent');
-  // Manually resume if needed
-  await OpenWearablesHealthSdk.resumeSync();
-}
+OpenWearablesHealthSdk.logStream.listen((message) {
+  print('[SDK] $message');
+});
+
+OpenWearablesHealthSdk.authErrorStream.listen((error) {
+  print('Auth error: ${error['statusCode']} - ${error['message']}');
+  // Handle token expiration - redirect to login, etc.
+});
 ```
 
-### 6. Sign Out
+### 7. Sign Out
 
 ```dart
 await OpenWearablesHealthSdk.signOut();
-// All credentials cleared from Keychain
 ```
 
 ---
 
 ## URL Structure
 
-When you provide a `host` (e.g. `https://api.example.com`), the SDK constructs all endpoints automatically:
+When you provide a `host` (e.g. `https://api.example.com`), the SDK constructs endpoints automatically:
 
 | Endpoint | URL |
 |----------|-----|
-| Health data sync | `{host}/api/v1/sdk/users/{userId}/sync/apple` |
+| Health data sync | `{host}/api/v1/sdk/users/{userId}/sync` |
 | Token refresh | `{host}/api/v1/token/refresh` |
+
+You can also provide a `customSyncUrl` during `configure()` to override the sync endpoint.
 
 ---
 
@@ -151,26 +230,32 @@ class HealthService {
     required String accessToken,
     required String refreshToken,
   }) async {
-    // 1. Configure SDK with your host
+    // 1. Configure SDK
     await OpenWearablesHealthSdk.configure(host: host);
 
-    // 2. Check current status
+    // 2. Check existing session
     if (OpenWearablesHealthSdk.isSignedIn) {
-      // Already signed in, just start sync if needed
       if (!OpenWearablesHealthSdk.isSyncActive) {
         await _startSync();
       }
       return;
     }
 
-    // 3. Sign in with credentials
+    // 3. Sign in
     await OpenWearablesHealthSdk.signIn(
       userId: userId,
       accessToken: accessToken,
       refreshToken: refreshToken,
     );
 
-    // 4. Start syncing
+    // 4. Select provider on Android
+    if (Platform.isAndroid) {
+      await OpenWearablesHealthSdk.setProvider(
+        AndroidHealthProvider.healthConnect,
+      );
+    }
+
+    // 5. Start syncing
     await _startSync();
   }
 
@@ -190,33 +275,40 @@ class HealthService {
 
 ---
 
-## Example App
-
-The example app demonstrates the full flow using an invitation code:
-
-1. Enter the **Host** URL and an **Invitation Code**
-2. The app redeems the code at `{host}/api/v1/invitation-code/redeem`
-3. Receives `access_token`, `refresh_token`, and `user_id`
-4. Signs in with the SDK and starts syncing
-5. Session auto-restores on app restart — no need to re-enter the code
-
----
-
 ## Supported Health Data Types
+
+### Supported on all platforms
 
 | Category | Types |
 |----------|-------|
-| **Activity** | steps, distanceWalkingRunning, distanceCycling, flightsClimbed, walkingSpeed, walkingStepLength, walkingAsymmetryPercentage, walkingDoubleSupportPercentage, sixMinuteWalkTestDistance |
+| **Activity** | steps, distanceWalkingRunning, flightsClimbed |
 | **Energy** | activeEnergy, basalEnergy |
 | **Heart** | heartRate, restingHeartRate, heartRateVariabilitySDNN, vo2Max, oxygenSaturation |
 | **Respiratory** | respiratoryRate |
-| **Body** | bodyMass, height, bmi, bodyFatPercentage, leanBodyMass, waistCircumference (iOS 16+), bodyTemperature |
-| **Blood Glucose / Insulin** | bloodGlucose, insulinDelivery (iOS 16+) |
-| **Blood Pressure** | bloodPressure, bloodPressureSystolic, bloodPressureDiastolic |
-| **Nutrition** | dietaryEnergyConsumed, dietaryCarbohydrates, dietaryProtein, dietaryFatTotal, dietaryWater |
-| **Sleep** | sleep, mindfulSession |
-| **Reproductive** | menstrualFlow, cervicalMucusQuality, ovulationTestResult, sexualActivity |
+| **Body** | bodyMass, height, bodyFatPercentage, leanBodyMass, bodyTemperature |
+| **Blood** | bloodGlucose, bloodPressure, bloodPressureSystolic, bloodPressureDiastolic |
+| **Nutrition** | dietaryWater |
+| **Sleep** | sleep |
 | **Workouts** | workout |
+
+### iOS only
+
+| Category | Types |
+|----------|-------|
+| **Activity** | distanceCycling, walkingSpeed, walkingStepLength, walkingAsymmetryPercentage, walkingDoubleSupportPercentage, sixMinuteWalkTestDistance |
+| **Body** | bmi, waistCircumference (iOS 16+) |
+| **Glucose** | insulinDelivery (iOS 16+) |
+| **Nutrition** | dietaryEnergyConsumed, dietaryCarbohydrates, dietaryProtein, dietaryFatTotal |
+| **Sleep** | mindfulSession |
+| **Reproductive** | menstrualFlow, cervicalMucusQuality, ovulationTestResult, sexualActivity |
+
+### Android only
+
+| Category | Types |
+|----------|-------|
+| **Activity** | distanceCycling (Health Connect) |
+
+> Types not supported on the current platform are silently ignored during sync.
 
 ---
 
@@ -226,7 +318,7 @@ The example app demonstrates the full flow using an invitation code:
 
 | Method | Description |
 |--------|-------------|
-| `configure({required host})` | Initialize SDK with host URL and restore session |
+| `configure({required host, customSyncUrl?})` | Initialize SDK with host URL and restore session |
 | `signIn({userId, accessToken?, refreshToken?, apiKey?})` | Sign in with tokens or API key |
 | `signOut()` | Sign out and clear all credentials |
 | `updateTokens({accessToken, refreshToken?})` | Update tokens without re-signing in |
@@ -239,6 +331,8 @@ The example app demonstrates the full flow using an invitation code:
 | `getSyncStatus()` | Get current sync session status |
 | `resumeSync()` | Manually resume interrupted sync |
 | `clearSyncSession()` | Clear interrupted sync without resuming |
+| `setProvider(AndroidHealthProvider)` | Set health data provider (Android only) |
+| `getAvailableProviders()` | Get available providers on device (Android only) |
 
 ### Properties
 
@@ -250,23 +344,8 @@ The example app demonstrates the full flow using an invitation code:
 | `currentUser` | `OpenWearablesHealthSdkUser?` | Current user info |
 | `config` | `OpenWearablesHealthSdkConfig?` | Current configuration |
 | `status` | `OpenWearablesHealthSdkStatus` | Current SDK status |
-
-### OpenWearablesHealthSdkStatus
-
-| Status | Description |
-|--------|-------------|
-| `notConfigured` | SDK not configured, call `configure()` |
-| `configured` | SDK configured, but no user signed in |
-| `signedIn` | User signed in, ready to sync |
-
-### getSyncStatus() Return Values
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `hasResumableSession` | `bool` | Whether there's an interrupted sync to resume |
-| `sentCount` | `int` | Number of records already sent in this session |
-| `isFullExport` | `bool` | Whether this is a full export or incremental sync |
-| `createdAt` | `String?` | ISO8601 timestamp when sync started |
+| `logStream` | `Stream<String>` | SDK log messages |
+| `authErrorStream` | `Stream<Map>` | Auth error events |
 
 ### Exceptions
 
@@ -275,6 +354,31 @@ The example app demonstrates the full flow using an invitation code:
 | `NotConfiguredException` | `configure()` was not called |
 | `NotSignedInException` | No user signed in |
 | `SignInException` | Sign-in failed |
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│ Flutter App (Dart)                                │
+│  OpenWearablesHealthSdk → MethodChannel           │
+└──────────────────┬───────────────────────────────┘
+                   │
+┌──────────────────▼───────────────────────────────┐
+│ Flutter Plugin (thin wrapper)                     │
+│  OpenWearablesHealthSdkPlugin.kt                  │
+│    └── delegates to ↓                             │
+│                                                   │
+│ Open Wearables Android SDK (native library)       │
+│  OpenWearablesHealthSDK (facade)                  │
+│    ├── SamsungHealthManager → Samsung Health       │
+│    ├── HealthConnectManager → Health Connect       │
+│    └── SyncManager → WorkManager background sync  │
+└───────────────────────────────────────────────────┘
+```
+
+On Android, the Flutter plugin is a thin wrapper around the **Open Wearables Android SDK** (`com.openwearables.health:sdk`), which can also be used independently in native Android apps.
 
 ---
 
