@@ -1,4 +1,13 @@
-## 0.0.8
+## 0.0.10
+
+* **Android support** — the plugin now works on both iOS and Android.
+* Android implementation uses the [Open Wearables Android SDK](https://github.com/the-momentum/open_wearables_android_sdk) via JitPack — the Flutter plugin is a thin wrapper, same as on iOS.
+* Dual health provider support on Android: **Samsung Health** and **Health Connect** with runtime selection (`setProvider`, `getAvailableProviders`).
+* Background sync powered by WorkManager with resumable sessions and incremental updates.
+* Token auth with automatic 401 refresh + API key alternative.
+* Updated example app with provider picker, invitation code flow, and live sync logs.
+
+## 0.0.9
 
 * Bumped native iOS SDK dependency from `~> 0.3.0` to `~> 0.4.0`.
 
