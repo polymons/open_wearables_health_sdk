@@ -1,3 +1,10 @@
+## 0.0.11
+
+* Fixed LLDB "overlapping Mach-O section" warnings (`__TPRO_CONST` / `__DATA_CONST`) on iOS <17 devices when built with Xcode 15+.
+* Added `-ld_classic` linker flag in Podfile to force legacy Mach-O section layout.
+* Bumped native iOS SDK dependency from `~> 0.5.0` to `~> 0.6.0`.
+* Aligned iOS deployment target to 15.0 across all podspecs.
+
 ## 0.0.10
 
 * **Android support** — the plugin now works on both iOS and Android.
