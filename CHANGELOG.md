@@ -1,3 +1,7 @@
+## 0.0.12
+
+* Bumped native Android SDK dependency from `v0.3.0` to `v0.4.0`.
+
 ## 0.0.11
 
 * Fixed LLDB "overlapping Mach-O section" warnings (`__TPRO_CONST` / `__DATA_CONST`) on iOS <17 devices when built with Xcode 15+.
