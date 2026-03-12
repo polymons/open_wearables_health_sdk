@@ -1,3 +1,11 @@
+## 0.0.13
+
+* Added `syncDaysBack` parameter to `startBackgroundSync()` — control how many days of history to sync.
+* Added `setLogLevel()` API with `OWLogLevel` enum (`none`, `always`, `debug`).
+* SDK logs are now auto-printed to the Dart console based on the log level (debug by default).
+* Bumped native iOS SDK dependency from `~> 0.6.0` to `~> 0.7.0`.
+* Bumped native Android SDK dependency from `v0.4.0` to `v0.5.0`.
+
 ## 0.0.12
 
 * Bumped native Android SDK dependency from `v0.3.0` to `v0.4.0`.
