@@ -80,7 +80,10 @@ abstract class OpenWearablesHealthSdkPlatform extends PlatformInterface {
 
   // MARK: - Sync Operations
 
-  Future<bool> startBackgroundSync() {
+  /// Starts background sync. Optionally set [syncDaysBack] to control how
+  /// many days of historical data to sync (from start of day, inclusive).
+  /// When `null` (the default), syncs all available history (full sync).
+  Future<bool> startBackgroundSync({int? syncDaysBack}) {
     throw UnimplementedError('startBackgroundSync() has not been implemented.');
   }
 
@@ -141,6 +144,17 @@ abstract class OpenWearablesHealthSdkPlatform extends PlatformInterface {
   /// On Android, returns providers that are installed and meet requirements.
   Future<List<Map<String, dynamic>>> getAvailableProviders() {
     throw UnimplementedError('getAvailableProviders() has not been implemented.');
+  }
+
+  // MARK: - Logging
+
+  /// Sets the native SDK log level.
+  ///
+  /// - `none`:   No logs at all.
+  /// - `always`: Logs are always emitted.
+  /// - `debug`:  Logs are emitted only in debug builds (default).
+  Future<void> setLogLevel({required String level}) {
+    throw UnimplementedError('setLogLevel() has not been implemented.');
   }
 }
 

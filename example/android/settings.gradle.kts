@@ -23,4 +23,11 @@ plugins {
     id("org.jetbrains.kotlin.android") version "2.1.0" apply false
 }
 
+// LOCAL DEV: swap JitPack dependency for local Android SDK sources
+includeBuild("../../../open-wearables-android-sdk") {
+    dependencySubstitution {
+        substitute(module("com.github.the-momentum.open_wearables_android_sdk:sdk")).using(project(":sdk"))
+    }
+}
+
 include(":app")

@@ -140,7 +140,8 @@ public class OpenWearablesHealthSdkPlugin: NSObject, FlutterPlugin, FlutterStrea
                 result(FlutterError(code: "not_signed_in", message: "Not signed in", details: nil))
                 return
             }
-            sdk.startBackgroundSync { canStart in
+            let syncDaysBack = (call.arguments as? [String: Any])?["syncDaysBack"] as? Int
+            sdk.startBackgroundSync(syncDaysBack: syncDaysBack) { canStart in
                 result(canStart)
             }
 
@@ -166,6 +167,20 @@ public class OpenWearablesHealthSdkPlugin: NSObject, FlutterPlugin, FlutterStrea
             
         case "clearSyncSession":
             sdk.clearSyncSession()
+            result(nil)
+
+        case "setLogLevel":
+            guard let args = call.arguments as? [String: Any],
+                  let levelStr = args["level"] as? String else {
+                result(FlutterError(code: "bad_args", message: "Missing level", details: nil))
+                return
+            }
+            switch levelStr {
+            case "none":   sdk.setLogLevel(.none)
+            case "always": sdk.setLogLevel(.always)
+            case "debug":  sdk.setLogLevel(.debug)
+            default:       sdk.setLogLevel(.debug)
+            }
             result(nil)
 
         default:

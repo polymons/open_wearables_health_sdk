@@ -167,7 +167,7 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
             "updateTokens" -> handleUpdateTokens(s, call, result)
             "getStoredCredentials" -> result.success(s.getStoredCredentials())
             "requestAuthorization" -> handleRequestAuthorization(s, call, result)
-            "startBackgroundSync" -> handleStartBackgroundSync(s, result)
+            "startBackgroundSync" -> handleStartBackgroundSync(s, call, result)
             "stopBackgroundSync" -> handleStopBackgroundSync(s, result)
             "syncNow" -> handleSyncNow(s, result)
             "resetAnchors" -> handleResetAnchors(s, result)
@@ -176,6 +176,7 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
             "clearSyncSession" -> { s.clearSyncSession(); result.success(null) }
             "setProvider" -> handleSetProvider(s, call, result)
             "getAvailableProviders" -> result.success(s.getAvailableProviders())
+            "setLogLevel" -> handleSetLogLevel(s, call, result)
             else -> result.notImplemented()
         }
     }
@@ -243,11 +244,13 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         }
     }
 
-    private fun handleStartBackgroundSync(sdk: OpenWearablesHealthSDK, result: Result) {
+    private fun handleStartBackgroundSync(sdk: OpenWearablesHealthSDK, call: MethodCall, result: Result) {
         if (!sdk.isSessionValid()) {
             result.error("not_signed_in", "Not signed in", null)
             return
         }
+
+        val syncDaysBack = call.argument<Int>("syncDaysBack")
 
         // Return true immediately so the UI reflects "syncing" right away.
         // The actual initial sync runs asynchronously in the background.
@@ -255,7 +258,7 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
 
         scope.launch {
             try {
-                sdk.startBackgroundSync()
+                sdk.startBackgroundSync(syncDaysBack)
             } catch (e: Exception) {
                 Log.e(TAG, "Background sync error: ${e.message}")
             }
@@ -308,5 +311,16 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         } else {
             result.error("provider_unavailable", "Provider '$providerId' is not available on this device", null)
         }
+    }
+
+    private fun handleSetLogLevel(sdk: OpenWearablesHealthSDK, call: MethodCall, result: Result) {
+        val level = when (call.argument<String>("level")) {
+            "none" -> OWLogLevel.NONE
+            "always" -> OWLogLevel.ALWAYS
+            "debug" -> OWLogLevel.DEBUG
+            else -> OWLogLevel.DEBUG
+        }
+        sdk.logLevel = level
+        result.success(null)
     }
 }

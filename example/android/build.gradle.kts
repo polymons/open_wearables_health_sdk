@@ -2,6 +2,10 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // LOCAL DEV: Samsung Health SDK bundled in local Android SDK
+        maven {
+            url = uri("${rootProject.projectDir}/../../../open-wearables-android-sdk/sdk/libs/maven")
+        }
     }
 }
 

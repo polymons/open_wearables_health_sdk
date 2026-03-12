@@ -1,6 +1,10 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:open_wearables_health_sdk/health_data_type.dart';
 import 'package:open_wearables_health_sdk/src/config.dart';
 import 'package:open_wearables_health_sdk/src/exceptions.dart';
+import 'package:open_wearables_health_sdk/src/log_level.dart';
 import 'package:open_wearables_health_sdk/src/provider.dart';
 import 'package:open_wearables_health_sdk/src/status.dart';
 import 'package:open_wearables_health_sdk/src/user.dart';
@@ -10,6 +14,7 @@ import 'open_wearables_health_sdk_platform_interface.dart';
 
 export 'package:open_wearables_health_sdk/src/config.dart';
 export 'package:open_wearables_health_sdk/src/exceptions.dart';
+export 'package:open_wearables_health_sdk/src/log_level.dart';
 export 'package:open_wearables_health_sdk/src/provider.dart';
 export 'package:open_wearables_health_sdk/src/status.dart';
 export 'package:open_wearables_health_sdk/src/user.dart';
@@ -59,6 +64,8 @@ class OpenWearablesHealthSdk {
   static OpenWearablesHealthSdkConfig? _config;
   static OpenWearablesHealthSdkUser? _currentUser;
   static bool _isSyncActive = false;
+  static OWLogLevel _logLevel = OWLogLevel.debug;
+  static StreamSubscription<String>? _logSubscription;
 
   // MARK: - Configuration
 
@@ -84,6 +91,8 @@ class OpenWearablesHealthSdk {
     required String host,
   }) async {
     _config = OpenWearablesHealthSdkConfig(host: host);
+
+    _updateLogSubscription();
 
     // Configure and check if sync was auto-restored
     _isSyncActive = await _platform.configure(host: host);
@@ -267,12 +276,27 @@ class OpenWearablesHealthSdk {
   /// The sync state is persisted and will auto-restore on app restart
   /// when [configure] is called.
   ///
+  /// [syncDaysBack] controls how many days of historical data to sync.
+  /// The SDK syncs from the **start of the day** that many days ago
+  /// (inclusive), so setting 30 means all data from midnight 30 days ago
+  /// until now. When `null` (the default), the SDK syncs all available
+  /// history (full sync). The value is persisted and used for all
+  /// subsequent background syncs until changed.
+  ///
   /// Returns true if background sync started successfully.
   ///
   /// Throws [NotSignedInException] if no user is signed in.
-  static Future<bool> startBackgroundSync() async {
+  ///
+  /// ```dart
+  /// // Sync last 90 days of data
+  /// await OpenWearablesHealthSdk.startBackgroundSync(syncDaysBack: 90);
+  ///
+  /// // Full sync (default - all available history)
+  /// await OpenWearablesHealthSdk.startBackgroundSync();
+  /// ```
+  static Future<bool> startBackgroundSync({int? syncDaysBack}) async {
     _ensureSignedIn();
-    final started = await _platform.startBackgroundSync();
+    final started = await _platform.startBackgroundSync(syncDaysBack: syncDaysBack);
     if (started) {
       _isSyncActive = true;
     }
@@ -407,6 +431,46 @@ class OpenWearablesHealthSdk {
   static Future<List<AvailableProvider>> getAvailableProviders() async {
     final raw = await _platform.getAvailableProviders();
     return raw.map((m) => AvailableProvider.fromMap(m)).toList();
+  }
+
+  // MARK: - Logging
+
+  /// Returns the current log level.
+  static OWLogLevel get logLevel => _logLevel;
+
+  /// Sets the SDK log level. Logs are automatically printed to the
+  /// Dart console (via `debugPrint`) based on this setting:
+  ///
+  /// - [OWLogLevel.none]:   No logs at all.
+  /// - [OWLogLevel.always]: Logs are always printed.
+  /// - [OWLogLevel.debug]:  Logs are printed only in debug builds (default).
+  ///
+  /// Call this before or after [configure]. Takes effect immediately.
+  ///
+  /// ```dart
+  /// await OpenWearablesHealthSdk.setLogLevel(OWLogLevel.always);
+  /// ```
+  static Future<void> setLogLevel(OWLogLevel level) async {
+    _logLevel = level;
+    await _platform.setLogLevel(level: level.id);
+    _updateLogSubscription();
+  }
+
+  static void _updateLogSubscription() {
+    final shouldListen = switch (_logLevel) {
+      OWLogLevel.none => false,
+      OWLogLevel.always => true,
+      OWLogLevel.debug => kDebugMode,
+    };
+
+    if (shouldListen && _logSubscription == null) {
+      _logSubscription = MethodChannelOpenWearablesHealthSdk.logStream.listen(
+        (message) => debugPrint('[OpenWearablesSDK] $message'),
+      );
+    } else if (!shouldListen && _logSubscription != null) {
+      _logSubscription?.cancel();
+      _logSubscription = null;
+    }
   }
 
   // MARK: - Helpers
