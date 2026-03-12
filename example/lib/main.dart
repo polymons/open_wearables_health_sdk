@@ -119,6 +119,11 @@ class _HomePageState extends State<HomePage> {
   bool _isAuthorized = false;
   bool _isSyncing = false;
 
+  // Sync days back selection
+  int? _syncDaysBack; // null = full sync
+  final _customDaysController = TextEditingController();
+  bool _isCustomDays = false;
+
   // Provider selection (Android only)
   List<AvailableProvider> _availableProviders = [];
   String? _selectedProviderId;
@@ -165,12 +170,14 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _hostController.dispose();
     _invitationCodeController.dispose();
+    _customDaysController.dispose();
     super.dispose();
   }
 
   Future<void> _autoConfigureOnStartup() async {
     setState(() => _isLoading = true);
     try {
+      await OpenWearablesHealthSdk.setLogLevel(OWLogLevel.always);
       final credentials = await OpenWearablesHealthSdk.getStoredCredentials();
       final hasUserId = credentials['userId'] != null && (credentials['userId'] as String).isNotEmpty;
       final hasAccessToken =
@@ -357,9 +364,10 @@ class _HomePageState extends State<HomePage> {
   Future<void> _startBackgroundSync() async {
     setState(() => _isLoading = true);
     try {
-      final started = await OpenWearablesHealthSdk.startBackgroundSync();
+      final label = _syncDaysBack != null ? 'last $_syncDaysBack days' : 'full history';
+      final started = await OpenWearablesHealthSdk.startBackgroundSync(syncDaysBack: _syncDaysBack);
       setState(() => _isSyncing = started);
-      _setStatus(started ? 'Sync started' : 'Could not start sync');
+      _setStatus(started ? 'Sync started ($label)' : 'Could not start sync');
     } on NotSignedInException {
       _setStatus('Sign in first');
     } catch (e) {
@@ -430,11 +438,14 @@ class _HomePageState extends State<HomePage> {
                   _buildStatusCard(),
                   const SizedBox(height: 24),
 
-                  if (!_isSignedIn) ...[_buildLoginSection()] else ...[
+                  if (!_isSignedIn) ...[
+                    _buildLoginSection(),
+                  ] else ...[
                     if (Platform.isAndroid && _availableProviders.isNotEmpty) ...[
                       _buildProviderSection(),
                       const SizedBox(height: 16),
                     ],
+                    if (_isAuthorized && !_isSyncing) ...[_buildSyncRangeSection()],
                     _buildActionsSection(),
                   ],
 
@@ -662,9 +673,7 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildProviderOption(AvailableProvider provider) {
     final isSelected = _selectedProviderId == provider.id;
-    final iconData = provider.id == 'samsung'
-        ? CupertinoIcons.device_phone_portrait
-        : CupertinoIcons.heart_circle;
+    final iconData = provider.id == 'samsung' ? CupertinoIcons.device_phone_portrait : CupertinoIcons.heart_circle;
 
     return CupertinoButton(
       padding: EdgeInsets.zero,
@@ -684,11 +693,7 @@ class _HomePageState extends State<HomePage> {
                 color: (isSelected ? OWColors.accentIndigo : OWColors.textMuted).withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(
-                iconData,
-                color: isSelected ? OWColors.accentIndigo : OWColors.textMuted,
-                size: 20,
-              ),
+              child: Icon(iconData, color: isSelected ? OWColors.accentIndigo : OWColors.textMuted, size: 20),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -705,9 +710,7 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                   Text(
-                    provider.id == 'samsung'
-                        ? 'Samsung devices with Samsung Health'
-                        : 'Universal Android health hub',
+                    provider.id == 'samsung' ? 'Samsung devices with Samsung Health' : 'Universal Android health hub',
                     style: const TextStyle(fontSize: 14, color: OWColors.textMuted, letterSpacing: -0.1),
                   ),
                 ],
@@ -720,16 +723,137 @@ class _HomePageState extends State<HomePage> {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: isSelected ? OWColors.accentIndigo : Colors.transparent,
-                border: Border.all(
-                  color: isSelected ? OWColors.accentIndigo : OWColors.textFooter,
-                  width: 2,
-                ),
+                border: Border.all(color: isSelected ? OWColors.accentIndigo : OWColors.textFooter, width: 2),
               ),
-              child: isSelected
-                  ? const Icon(Icons.check, size: 16, color: Colors.white)
-                  : null,
+              child: isSelected ? const Icon(Icons.check, size: 16, color: Colors.white) : null,
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSyncRangeSection() {
+    final presets = <({String label, int? days})>[
+      (label: 'Full Sync', days: null),
+      (label: '1 Day', days: 1),
+      (label: '30 Days', days: 30),
+      (label: '90 Days', days: 90),
+      (label: '365 Days', days: 365),
+    ];
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Container(
+        decoration: BoxDecoration(
+          color: OWColors.surface.withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: OWColors.border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 20, 20, 4),
+              child: Text(
+                'SYNC RANGE',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: OWColors.textMuted,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Text(
+                'How far back to sync health data',
+                style: TextStyle(fontSize: 14, color: OWColors.textFooter),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final preset in presets)
+                    _buildRangeChip(
+                      label: preset.label,
+                      isSelected: !_isCustomDays && _syncDaysBack == preset.days,
+                      onTap: () => setState(() {
+                        _syncDaysBack = preset.days;
+                        _isCustomDays = false;
+                      }),
+                    ),
+                  _buildRangeChip(
+                    label: 'Custom',
+                    isSelected: _isCustomDays,
+                    onTap: () => setState(() {
+                      _isCustomDays = true;
+                      if (_customDaysController.text.isNotEmpty) {
+                        _syncDaysBack = int.tryParse(_customDaysController.text);
+                      }
+                    }),
+                  ),
+                ],
+              ),
+            ),
+            if (_isCustomDays)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                child: Row(
+                  children: [
+                    const Icon(CupertinoIcons.number, color: OWColors.textMuted, size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: CupertinoTextField(
+                        controller: _customDaysController,
+                        placeholder: 'Number of days',
+                        keyboardType: TextInputType.number,
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        decoration: const BoxDecoration(),
+                        style: const TextStyle(fontSize: 17, color: OWColors.textPrimary),
+                        placeholderStyle: const TextStyle(fontSize: 17, color: OWColors.textMuted),
+                        cursorColor: OWColors.accent,
+                        onChanged: (value) {
+                          setState(() {
+                            _syncDaysBack = int.tryParse(value);
+                          });
+                        },
+                      ),
+                    ),
+                    if (_syncDaysBack != null && _isCustomDays)
+                      Text('days', style: const TextStyle(fontSize: 15, color: OWColors.textSecondary)),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRangeChip({required String label, required bool isSelected, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? OWColors.accentIndigo : OWColors.surfaceLight,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: isSelected ? OWColors.accentIndigo : OWColors.border),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+            color: isSelected ? Colors.white : OWColors.textSecondary,
+          ),
         ),
       ),
     );
@@ -757,7 +881,9 @@ class _HomePageState extends State<HomePage> {
               icon: _isSyncing ? CupertinoIcons.pause : CupertinoIcons.play,
               iconColor: OWColors.success,
               title: _isSyncing ? 'Stop Sync' : 'Start Sync',
-              subtitle: _isSyncing ? 'Background sync is active' : 'Begin syncing health data',
+              subtitle: _isSyncing
+                  ? 'Background sync is active'
+                  : 'Sync ${_syncDaysBack != null ? 'last $_syncDaysBack days' : 'full history'}',
               onTap: _isSyncing ? _stopBackgroundSync : _startBackgroundSync,
             ),
             _buildDivider(),

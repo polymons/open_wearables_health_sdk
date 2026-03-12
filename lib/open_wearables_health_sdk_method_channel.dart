@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 
 import 'open_wearables_health_sdk_platform_interface.dart';
@@ -9,18 +11,40 @@ class MethodChannelOpenWearablesHealthSdk extends OpenWearablesHealthSdkPlatform
   static const EventChannel _logChannel = EventChannel('open_wearables_health_sdk/logs');
   static const EventChannel _authErrorChannel = EventChannel('open_wearables_health_sdk/auth_errors');
 
+  static final StreamController<String> _logController = _createLogController();
+  static final StreamController<Map<String, dynamic>> _authErrorController = _createAuthErrorController();
+
+  static StreamController<String> _createLogController() {
+    final controller = StreamController<String>.broadcast();
+    _logChannel.receiveBroadcastStream().listen(
+      (event) => controller.add(event.toString()),
+      onError: (error) => controller.addError(error),
+    );
+    return controller;
+  }
+
+  static StreamController<Map<String, dynamic>> _createAuthErrorController() {
+    final controller = StreamController<Map<String, dynamic>>.broadcast();
+    _authErrorChannel.receiveBroadcastStream().listen(
+      (event) {
+        if (event is Map) {
+          controller.add(Map<String, dynamic>.from(event));
+        } else {
+          controller.add({'statusCode': 401, 'message': 'Authentication error'});
+        }
+      },
+      onError: (error) => controller.addError(error),
+    );
+    return controller;
+  }
+
   /// Stream of log messages from the native SDK.
-  /// Subscribe to this to receive real-time logs about sync operations.
-  static Stream<String> get logStream => _logChannel.receiveBroadcastStream().map((event) => event.toString());
+  /// Multiple listeners can subscribe simultaneously.
+  static Stream<String> get logStream => _logController.stream;
 
   /// Stream of authentication errors (e.g., 401 Unauthorized).
-  /// Subscribe to this to handle token expiration and re-authentication.
-  static Stream<Map<String, dynamic>> get authErrorStream => _authErrorChannel.receiveBroadcastStream().map((event) {
-    if (event is Map) {
-      return Map<String, dynamic>.from(event);
-    }
-    return {'statusCode': 401, 'message': 'Authentication error'};
-  });
+  /// Multiple listeners can subscribe simultaneously.
+  static Stream<Map<String, dynamic>> get authErrorStream => _authErrorController.stream;
 
   @override
   Future<bool> configure({required String host}) async {
@@ -81,8 +105,10 @@ class MethodChannelOpenWearablesHealthSdk extends OpenWearablesHealthSdkPlatform
   }
 
   @override
-  Future<bool> startBackgroundSync() async {
-    final result = await _channel.invokeMethod<bool>('startBackgroundSync');
+  Future<bool> startBackgroundSync({int? syncDaysBack}) async {
+    final result = await _channel.invokeMethod<bool>('startBackgroundSync', {
+      if (syncDaysBack != null) 'syncDaysBack': syncDaysBack,
+    });
     return result == true;
   }
 
@@ -140,5 +166,10 @@ class MethodChannelOpenWearablesHealthSdk extends OpenWearablesHealthSdkPlatform
         .whereType<Map<Object?, Object?>>()
         .map((map) => map.map((key, value) => MapEntry(key as String, value)))
         .toList();
+  }
+
+  @override
+  Future<void> setLogLevel({required String level}) async {
+    await _channel.invokeMethod<void>('setLogLevel', {'level': level});
   }
 }
