@@ -1,3 +1,7 @@
+## 0.0.14
+
+* Bumped native iOS SDK dependency from `~> 0.7.0` to `~> 0.8.0`.
+
 ## 0.0.13
 
 * Added `syncDaysBack` parameter to `startBackgroundSync()` — control how many days of history to sync.
