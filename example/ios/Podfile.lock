@@ -2,10 +2,10 @@ PODS:
   - Flutter (1.0.0)
   - integration_test (0.0.1):
     - Flutter
-  - open_wearables_health_sdk (0.0.13):
+  - open_wearables_health_sdk (0.0.15):
     - Flutter
-    - OpenWearablesHealthSDK (~> 0.8.0)
-  - OpenWearablesHealthSDK (0.8.0)
+    - OpenWearablesHealthSDK (~> 0.9.0)
+  - OpenWearablesHealthSDK (0.9.0)
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
@@ -27,8 +27,8 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
-  open_wearables_health_sdk: 9052d5aa63818bb3183a00b324c134af45c1b41c
-  OpenWearablesHealthSDK: 3ee961171c9cdbbfe38b5cc7bc0deddd9b31ed9b
+  open_wearables_health_sdk: 3a33d383b17d1b2098cd4ca6acc251ebaf8488c8
+  OpenWearablesHealthSDK: 50d16b38583f823aa9ea2b350023ae3a5b2ab85c
 
 PODFILE CHECKSUM: f21b7cdb63d237e1942ad54eef07131b34c4de6d
 

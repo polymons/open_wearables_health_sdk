@@ -1,5 +1,10 @@
 ## 0.0.14
 
+* Bumped native iOS SDK dependency from `~> 0.8.0` to `~> 0.9.0`.
+* Bumped native Android SDK dependency from `v0.5.0` to `v0.6.0`.
+
+## 0.0.14
+
 * Bumped native iOS SDK dependency from `~> 0.7.0` to `~> 0.8.0`.
 
 ## 0.0.13
