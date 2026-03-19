@@ -207,9 +207,12 @@ class OpenWearablesHealthSdk {
   /// any sync operations.
   static Future<void> signOut() async {
     if (_currentUser != null) {
-      await _platform.signOut();
-      _currentUser = null;
-      _isSyncActive = false;
+      try {
+        await _platform.signOut();
+      } finally {
+        _currentUser = null;
+        _isSyncActive = false;
+      }
     }
   }
 
@@ -431,6 +434,26 @@ class OpenWearablesHealthSdk {
   static Future<List<AvailableProvider>> getAvailableProviders() async {
     final raw = await _platform.getAvailableProviders();
     return raw.map((m) => AvailableProvider.fromMap(m)).toList();
+  }
+
+  // MARK: - Notification (Android only)
+
+  /// Customizes the foreground notification shown during background sync
+  /// on Android.
+  ///
+  /// Both parameters are optional — pass only what you want to change.
+  /// The values are persisted and survive app restarts.
+  ///
+  /// On iOS this is a no-op.
+  ///
+  /// ```dart
+  /// await OpenWearablesHealthSdk.setSyncNotification(
+  ///   title: 'MyApp',
+  ///   text: 'Synchronizing your fitness data...',
+  /// );
+  /// ```
+  static Future<void> setSyncNotification({String? title, String? text}) async {
+    await _platform.setSyncNotification(title: title, text: text);
   }
 
   // MARK: - Logging

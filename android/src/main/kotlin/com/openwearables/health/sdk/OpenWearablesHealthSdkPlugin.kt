@@ -176,6 +176,7 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
             "clearSyncSession" -> { s.clearSyncSession(); result.success(null) }
             "setProvider" -> handleSetProvider(s, call, result)
             "getAvailableProviders" -> result.success(s.getAvailableProviders())
+            "setSyncNotification" -> handleSetSyncNotification(s, call, result)
             "setLogLevel" -> handleSetLogLevel(s, call, result)
             else -> result.notImplemented()
         }
@@ -218,7 +219,11 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
 
     private fun handleSignOut(sdk: OpenWearablesHealthSDK, result: Result) {
         scope.launch {
-            sdk.signOut()
+            try {
+                sdk.signOut()
+            } catch (e: Exception) {
+                Log.e(TAG, "Sign out error (state cleared anyway)", e)
+            }
             result.success(null)
         }
     }
@@ -311,6 +316,14 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         } else {
             result.error("provider_unavailable", "Provider '$providerId' is not available on this device", null)
         }
+    }
+
+    private fun handleSetSyncNotification(sdk: OpenWearablesHealthSDK, call: MethodCall, result: Result) {
+        sdk.setSyncNotification(
+            title = call.argument<String>("title"),
+            text = call.argument<String>("text")
+        )
+        result.success(null)
     }
 
     private fun handleSetLogLevel(sdk: OpenWearablesHealthSDK, call: MethodCall, result: Result) {

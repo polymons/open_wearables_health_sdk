@@ -206,6 +206,10 @@ class _HomePageState extends State<HomePage> {
 
       if (Platform.isAndroid) {
         await _loadAvailableProviders();
+        await OpenWearablesHealthSdk.setSyncNotification(
+          title: '🏃 Open Wearables',
+          text: '⚡ Sync in progress — keeping your health data fresh 💪',
+        );
       }
     } catch (e) {
       debugPrint('Auto-configure failed: $e');
@@ -318,6 +322,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _isSignedIn = OpenWearablesHealthSdk.isSignedIn;
       _isSyncing = OpenWearablesHealthSdk.isSyncActive;
+      if (_isSyncing) _isAuthorized = true;
     });
   }
 

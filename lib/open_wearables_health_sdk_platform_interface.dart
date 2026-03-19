@@ -146,6 +146,15 @@ abstract class OpenWearablesHealthSdkPlatform extends PlatformInterface {
     throw UnimplementedError('getAvailableProviders() has not been implemented.');
   }
 
+  // MARK: - Notification
+
+  /// Customizes the foreground notification shown during background sync.
+  ///
+  /// Only affects Android. On iOS this is a no-op.
+  Future<void> setSyncNotification({String? title, String? text}) {
+    throw UnimplementedError('setSyncNotification() has not been implemented.');
+  }
+
   // MARK: - Logging
 
   /// Sets the native SDK log level.

@@ -169,6 +169,14 @@ class MethodChannelOpenWearablesHealthSdk extends OpenWearablesHealthSdkPlatform
   }
 
   @override
+  Future<void> setSyncNotification({String? title, String? text}) async {
+    await _channel.invokeMethod<void>('setSyncNotification', {
+      if (title != null) 'title': title,
+      if (text != null) 'text': text,
+    });
+  }
+
+  @override
   Future<void> setLogLevel({required String level}) async {
     await _channel.invokeMethod<void>('setLogLevel', {'level': level});
   }

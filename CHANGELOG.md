@@ -1,4 +1,12 @@
-## 0.0.14
+## 0.0.16
+
+* Bumped native iOS SDK dependency from `~> 0.9.0` to `~> 0.10.0`.
+* Bumped native Android SDK dependency from `v0.6.0` to `v0.7.0`.
+* Fixed `isSignedIn` returning `true` after `signOut()` — Dart-side state is now always cleared in a `finally` block.
+* Fixed Android `signOut()` hanging if native call throws — wrapped in `try-catch` with guaranteed `result.success()`.
+* Added `setSyncNotification(title, text)` — customize the Android foreground service notification shown during background sync (no-op on iOS).
+
+## 0.0.15
 
 * Bumped native iOS SDK dependency from `~> 0.8.0` to `~> 0.9.0`.
 * Bumped native Android SDK dependency from `v0.5.0` to `v0.6.0`.
