@@ -1,3 +1,10 @@
+## 0.0.17
+
+* **Breaking: Foreground service type changed from `dataSync` to `health`** to comply with Google Play policy. Apps must update their Play Console FGS declaration from "Data Sync" to "Health" and remove any manual `<service android:foregroundServiceType="dataSync">` from their `AndroidManifest.xml` — the SDK now provides the correct declaration via manifest merge.
+* Added `FOREGROUND_SERVICE_HEALTH` and `HIGH_SAMPLING_RATE_SENSORS` permissions to the plugin manifest.
+* Updated README with Android foreground service requirements, Play Console declaration guide, and mandatory `setSyncNotification()` usage.
+* Bumped native Android SDK dependency from `v0.7.0` to `v0.8.0`.
+
 ## 0.0.16
 
 * Bumped native iOS SDK dependency from `~> 0.9.0` to `~> 0.10.0`.

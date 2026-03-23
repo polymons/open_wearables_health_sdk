@@ -50,7 +50,7 @@ android {
 
     dependencies {
         // Open Wearables Health SDK (from GitHub via JitPack)
-        implementation("com.github.the-momentum.open_wearables_android_sdk:sdk:v0.7.0")
+        implementation("com.github.the-momentum.open_wearables_android_sdk:sdk:v0.8.0")
 
         // Testing
         testImplementation("org.jetbrains.kotlin:kotlin-test")

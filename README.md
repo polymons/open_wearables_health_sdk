@@ -102,6 +102,55 @@ class MainActivity : FlutterFragmentActivity()
 
 This is required for Health Connect permission dialogs to work.
 
+#### Background Sync & Foreground Service (required for Play Store)
+
+The SDK uses a WorkManager foreground service to sync health data in the background. Starting with Android 14, Google Play requires a correct **foreground service type** declaration. Since this SDK accesses health data, the correct type is `health` (not `dataSync`).
+
+The SDK's `AndroidManifest.xml` already declares the correct service, permissions, and FGS type — they are automatically merged into your app via manifest merging. **You do not need to add a service declaration yourself.**
+
+The following are added automatically by the SDK:
+
+```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+<uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+
+<service
+    android:name="androidx.work.impl.foreground.SystemForegroundService"
+    android:foregroundServiceType="health"
+    tools:node="merge" />
+```
+
+> **Warning:** If you previously declared the service manually with `foregroundServiceType="dataSync"`, **remove it** from your `AndroidManifest.xml`. Using `dataSync` for health data will cause Google Play rejection.
+
+##### Play Console declaration
+
+When submitting to Google Play, you must declare the foreground service type in the Play Console:
+
+1. Go to **Policy > App content > Foreground service permissions**
+2. Select **Health** as your foreground service type
+3. Describe the use case: *"The app reads health data from Health Connect (steps, heart rate, sleep, etc.) and synchronizes it in the background to the user's account."*
+4. Explain what happens if interrupted: *"If the sync is interrupted, it automatically resumes on next app launch or when the system allows. No data is lost."*
+5. Provide a video or screenshots showing:
+   - The user granting Health Connect permissions
+   - A visible notification during background sync (see `setSyncNotification` below)
+   - The in-app UI indicating that sync is active
+
+##### Foreground notification (required)
+
+Android requires a visible notification while a foreground service is running. Call `setSyncNotification` **before** starting background sync so the user can see what's happening:
+
+```dart
+if (Platform.isAndroid) {
+  await OpenWearablesHealthSdk.setSyncNotification(
+    title: 'MyApp',
+    text: 'Syncing your health data...',
+  );
+}
+```
+
+This notification is a Play Store requirement — without it, your app will be rejected for "FGS not perceptible to the user".
+
 #### Samsung Health
 
 Samsung Health is supported out of the box - the Samsung Health Data SDK is bundled in the Android SDK repository. No extra download needed.
@@ -263,6 +312,15 @@ class HealthService {
     await OpenWearablesHealthSdk.requestAuthorization(
       types: HealthDataType.values,
     );
+
+    // Required on Android: set a visible notification before starting sync
+    if (Platform.isAndroid) {
+      await OpenWearablesHealthSdk.setSyncNotification(
+        title: 'Health sync active',
+        text: 'Syncing your health data...',
+      );
+    }
+
     await OpenWearablesHealthSdk.startBackgroundSync();
   }
 

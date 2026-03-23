@@ -48,12 +48,6 @@
             </intent-filter>
         </activity-alias>
 
-        <!-- WorkManager foreground service for background health sync -->
-        <service
-            android:name="androidx.work.impl.foreground.SystemForegroundService"
-            android:foregroundServiceType="dataSync"
-            tools:node="merge" />
-
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
