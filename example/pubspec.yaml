@@ -16,7 +16,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
+  sentry_flutter: ^9.16.0
   open_wearables_health_sdk:
     # When depending on this package from a real application you should use:
     #   open_wearables_health_sdk: ^x.y.z

@@ -1,3 +1,10 @@
+## 0.0.18
+
+* Bumped native iOS SDK dependency from `~> 0.10.0` to `~> 0.11.0`.
+* Bumped native Android SDK dependency from `v0.8.0` to `v0.9.0`.
+* **Smarter disconnect behavior**: transient network errors during token refresh no longer force user sign-out — only genuine authentication failures (401/403) trigger disconnect.
+* Added Sentry error logging to the example app for disconnect events and sync failures.
+
 ## 0.0.17
 
 * **Breaking: Foreground service type changed from `dataSync` to `health`** to comply with Google Play policy. Apps must update their Play Console FGS declaration from "Data Sync" to "Health" and remove any manual `<service android:foregroundServiceType="dataSync">` from their `AndroidManifest.xml` — the SDK now provides the correct declaration via manifest merge.

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:open_wearables_health_sdk/health_data_type.dart';
 import 'package:open_wearables_health_sdk/open_wearables_health_sdk.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 
 // Open Wearables design tokens
 class OWColors {
@@ -31,7 +32,9 @@ class OWColors {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  runApp(const MyApp());
+  await SentryFlutter.init((options) {
+    options.dsn = 'https://3d912364254042549967f3560053f841@sentry.mntm.dev/109';
+  }, appRunner: () => runApp(MyApp()));
 }
 
 // Simple in-memory logs (limited to 500 entries for performance)
@@ -139,6 +142,8 @@ class _HomePageState extends State<HomePage> {
     MethodChannelOpenWearablesHealthSdk.logStream.listen((message) {
       final timestamp = DateTime.now().toIso8601String().split('T').last.split('.').first;
       _addLog('$timestamp $message');
+
+      Sentry.addBreadcrumb(Breadcrumb(category: 'sdk.log', message: message, level: _sentryLevelFromLog(message)));
     });
 
     // Handle auth errors (401) - sign out and redirect to login
@@ -146,15 +151,41 @@ class _HomePageState extends State<HomePage> {
       final statusCode = error['statusCode'];
       final message = error['message'] ?? 'Authentication error';
       _addLog('🔒 Auth error: $statusCode - $message');
+
+      Sentry.captureEvent(
+        SentryEvent(
+          message: SentryMessage('Auth error: forced disconnect'),
+          level: SentryLevel.error,
+          tags: {'statusCode': '$statusCode'},
+          contexts: Contexts()..['auth_error'] = error,
+        ),
+      );
+
       _handleAuthError();
     });
   }
 
+  SentryLevel _sentryLevelFromLog(String message) {
+    final lower = message.toLowerCase();
+    if (lower.contains('error') || lower.contains('failed') || lower.contains('401')) {
+      return SentryLevel.error;
+    }
+    if (lower.contains('warn') || lower.contains('retry') || lower.contains('rejected')) {
+      return SentryLevel.warning;
+    }
+    return SentryLevel.info;
+  }
+
   Future<void> _handleAuthError() async {
-    // Sign out and reset state
+    Sentry.addBreadcrumb(
+      Breadcrumb(category: 'auth', message: 'Signing out due to auth error', level: SentryLevel.warning),
+    );
+
     try {
       await OpenWearablesHealthSdk.signOut();
     } catch (_) {}
+
+    Sentry.configureScope((scope) => scope.setUser(null));
 
     if (mounted) {
       setState(() {
@@ -211,8 +242,9 @@ class _HomePageState extends State<HomePage> {
           text: '⚡ Sync in progress — keeping your health data fresh 💪',
         );
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       debugPrint('Auto-configure failed: $e');
+      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'autoConfigureOnStartup'}));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -244,8 +276,13 @@ class _HomePageState extends State<HomePage> {
         _isAuthorized = false;
       });
       _setStatus('Provider set to ${provider.displayName}');
-    } catch (e) {
+    } catch (e, stackTrace) {
       _setStatus('Failed to set provider: $e');
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'selectProvider', 'providerId': providerId}),
+      );
     } finally {
       setState(() => _isLoading = false);
     }
@@ -277,6 +314,14 @@ class _HomePageState extends State<HomePage> {
 
       if (response.statusCode != 200) {
         _setStatus('Redeem failed (${response.statusCode}): ${response.body}');
+        Sentry.captureEvent(
+          SentryEvent(
+            message: SentryMessage('Invitation code redeem failed'),
+            level: SentryLevel.warning,
+            tags: {'statusCode': '${response.statusCode}', 'host': host},
+            contexts: Contexts()..['response_details'] = {'body': response.body.length > 500 ? response.body.substring(0, 500) : response.body},
+          ),
+        );
         return;
       }
 
@@ -299,14 +344,20 @@ class _HomePageState extends State<HomePage> {
       final bearerToken = accessToken.startsWith('Bearer ') ? accessToken : 'Bearer $accessToken';
       await OpenWearablesHealthSdk.signIn(userId: userId, accessToken: bearerToken, refreshToken: refreshToken);
 
+      Sentry.configureScope((scope) => scope.setUser(SentryUser(id: userId)));
       _setStatus('Connected successfully');
       _checkStatus();
 
       if (Platform.isAndroid) {
         await _loadAvailableProviders();
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       _setStatus('Connection failed: $e');
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'connectWithInvitationCode'}),
+      );
     } finally {
       setState(() => _isLoading = false);
     }
@@ -337,6 +388,7 @@ class _HomePageState extends State<HomePage> {
     setState(() => _isLoading = true);
     try {
       await OpenWearablesHealthSdk.signOut();
+      Sentry.configureScope((scope) => scope.setUser(null));
       _setStatus('Signed out');
       _checkStatus();
       setState(() {
@@ -344,8 +396,9 @@ class _HomePageState extends State<HomePage> {
         _isSyncing = false;
         _invitationCodeController.clear();
       });
-    } catch (e) {
+    } catch (e, stackTrace) {
       _setStatus('Error: $e');
+      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'signOut'}));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -357,10 +410,16 @@ class _HomePageState extends State<HomePage> {
       final authorized = await OpenWearablesHealthSdk.requestAuthorization(types: HealthDataType.values);
       setState(() => _isAuthorized = authorized);
       _setStatus(authorized ? 'Authorized' : 'Authorization denied');
+      if (!authorized) {
+        Sentry.captureEvent(
+          SentryEvent(message: SentryMessage('Health authorization denied by user'), level: SentryLevel.warning),
+        );
+      }
     } on NotSignedInException {
       _setStatus('Sign in first');
-    } catch (e) {
+    } catch (e, stackTrace) {
       _setStatus('Error: $e');
+      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'requestAuthorization'}));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -373,10 +432,20 @@ class _HomePageState extends State<HomePage> {
       final started = await OpenWearablesHealthSdk.startBackgroundSync(syncDaysBack: _syncDaysBack);
       setState(() => _isSyncing = started);
       _setStatus(started ? 'Sync started ($label)' : 'Could not start sync');
+      if (!started) {
+        Sentry.captureEvent(
+          SentryEvent(
+            message: SentryMessage('Background sync failed to start'),
+            level: SentryLevel.warning,
+            tags: {'syncDaysBack': '${_syncDaysBack ?? "full"}'},
+          ),
+        );
+      }
     } on NotSignedInException {
       _setStatus('Sign in first');
-    } catch (e) {
+    } catch (e, stackTrace) {
       _setStatus('Error: $e');
+      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'startBackgroundSync'}));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -388,8 +457,9 @@ class _HomePageState extends State<HomePage> {
       await OpenWearablesHealthSdk.stopBackgroundSync();
       setState(() => _isSyncing = false);
       _setStatus('Sync stopped');
-    } catch (e) {
+    } catch (e, stackTrace) {
       _setStatus('Error: $e');
+      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'stopBackgroundSync'}));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -402,8 +472,9 @@ class _HomePageState extends State<HomePage> {
       _setStatus('Sync triggered');
     } on NotSignedInException {
       _setStatus('Sign in first');
-    } catch (e) {
+    } catch (e, stackTrace) {
       _setStatus('Error: $e');
+      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'syncNow'}));
     } finally {
       setState(() => _isLoading = false);
     }
