@@ -183,6 +183,9 @@ public class OpenWearablesHealthSdkPlugin: NSObject, FlutterPlugin, FlutterStrea
             }
             result(nil)
 
+        case "setSyncNotification":
+            result(nil)
+
         default:
             result(FlutterMethodNotImplemented)
         }

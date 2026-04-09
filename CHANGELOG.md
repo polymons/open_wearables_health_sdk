@@ -1,3 +1,8 @@
+## 0.0.19
+
+* Bumped native iOS SDK dependency from `~> 0.11.0` to `~> 0.12.0`.
+* **Source device name**: health data payloads now include a human-readable device `name` field alongside existing source metadata (via iOS SDK 0.12.0).
+
 ## 0.0.18
 
 * Bumped native iOS SDK dependency from `~> 0.10.0` to `~> 0.11.0`.

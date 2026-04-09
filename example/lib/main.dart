@@ -319,7 +319,10 @@ class _HomePageState extends State<HomePage> {
             message: SentryMessage('Invitation code redeem failed'),
             level: SentryLevel.warning,
             tags: {'statusCode': '${response.statusCode}', 'host': host},
-            contexts: Contexts()..['response_details'] = {'body': response.body.length > 500 ? response.body.substring(0, 500) : response.body},
+            contexts: Contexts()
+              ..['response_details'] = {
+                'body': response.body.length > 500 ? response.body.substring(0, 500) : response.body,
+              },
           ),
         );
         return;
