@@ -2,10 +2,10 @@ PODS:
   - Flutter (1.0.0)
   - integration_test (0.0.1):
     - Flutter
-  - open_wearables_health_sdk (0.0.18):
+  - open_wearables_health_sdk (0.0.20):
     - Flutter
-    - OpenWearablesHealthSDK (~> 0.11.0)
-  - OpenWearablesHealthSDK (0.11.0)
+    - OpenWearablesHealthSDK (~> 0.13.0)
+  - OpenWearablesHealthSDK (0.13.0)
   - package_info_plus (0.4.5):
     - Flutter
   - Sentry/HybridSDK (8.58.0)
@@ -41,8 +41,8 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
-  open_wearables_health_sdk: d384f7081cb94f863eef66350922e315bc52e064
-  OpenWearablesHealthSDK: d7f5957c2de56c614c9c66295f10bd9e6e2d7488
+  open_wearables_health_sdk: 42b6c8d7053da5c053f1a41430471bc37ccf40ef
+  OpenWearablesHealthSDK: 95bfb91cb2236faf7a0359f5017299cbae47889a
   package_info_plus: af8e2ca6888548050f16fa2f1938db7b5a5df499
   Sentry: d587a8fe91ca13503ecd69a1905f3e8a0fcf61be
   sentry_flutter: 31101687061fb85211ebab09ce6eb8db4e9ba74f

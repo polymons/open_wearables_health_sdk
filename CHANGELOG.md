@@ -1,3 +1,11 @@
+## 0.0.20
+
+* Bumped native iOS SDK dependency from `~> 0.12.0` to `~> 0.13.0`.
+* Bumped native Android SDK dependency from `v0.9.0` to `v0.10.0`.
+* **Sync telemetry**: both iOS and Android SDKs now send diagnostic events (`sync_start`, per-type `sync_end`, `device_state`) to the `/logs` endpoint during initial full syncs.
+* **Android: auto full export**: first sync now automatically runs as full export, matching iOS behavior.
+* **Android: fixed OkHttp connection leaks** in sync uploads and log requests.
+
 ## 0.0.19
 
 * Bumped native iOS SDK dependency from `~> 0.11.0` to `~> 0.12.0`.
