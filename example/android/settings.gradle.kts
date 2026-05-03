@@ -26,11 +26,15 @@ plugins {
 
 include(":app")
 
-// Use the local, mTLS-patched copy of the Android SDK instead of the
-// upstream JitPack artifact declared in ../android/build.gradle.
-includeBuild("../../../open_wearables_android_sdk") {
-    dependencySubstitution {
-        substitute(module("com.github.the-momentum.open_wearables_android_sdk:sdk"))
-            .using(project(":sdk"))
+// Use the local, mTLS-patched copy of the Android SDK when the sibling repo
+// is checked out. Falls back to the JitPack artifact on CI or machines that
+// don't have open_wearables_android_sdk checked out next to this repo.
+val localAndroidSdk = file("../../../open_wearables_android_sdk")
+if (localAndroidSdk.exists()) {
+    includeBuild(localAndroidSdk) {
+        dependencySubstitution {
+            substitute(module("com.github.the-momentum.open_wearables_android_sdk:sdk"))
+                .using(project(":sdk"))
+        }
     }
 }

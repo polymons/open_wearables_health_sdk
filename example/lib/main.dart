@@ -345,9 +345,9 @@ class _HomePageState extends State<HomePage> {
         code: invitationCode,
       );
 
-      final statusCode = response['statusCode'] as int? ?? 0;
-      final body = response['body'] as String? ?? '';
-      final data = (response['data'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final statusCode = response.statusCode;
+      final body = response.body;
+      final data = response.data;
 
       if (statusCode != 200) {
         _setStatus('Redeem failed ($statusCode): $body');

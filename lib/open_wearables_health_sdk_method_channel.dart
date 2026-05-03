@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import 'open_wearables_health_sdk_platform_interface.dart';
 import 'src/exceptions.dart';
+import 'src/redeem_result.dart';
 
 /// MethodChannel-based implementation of the OpenWearablesHealthSdk platform interface.
 class MethodChannelOpenWearablesHealthSdk extends OpenWearablesHealthSdkPlatform {
@@ -199,7 +200,7 @@ class MethodChannelOpenWearablesHealthSdk extends OpenWearablesHealthSdkPlatform
   }
 
   @override
-  Future<Map<String, dynamic>> redeemInvitationCode({
+  Future<RedeemResult> redeemInvitationCode({
     required String host,
     required String code,
   }) async {
@@ -207,6 +208,6 @@ class MethodChannelOpenWearablesHealthSdk extends OpenWearablesHealthSdkPlatform
       'redeemInvitationCode',
       {'host': host, 'code': code},
     );
-    return (result ?? {}).map((k, v) => MapEntry(k.toString(), v));
+    return RedeemResult.fromMap(result ?? {});
   }
 }

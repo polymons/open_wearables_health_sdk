@@ -1,5 +1,7 @@
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
+import 'src/redeem_result.dart';
+
 /// Defines the interface for the OpenWearablesHealthSdk plugin.
 abstract class OpenWearablesHealthSdkPlatform extends PlatformInterface {
   OpenWearablesHealthSdkPlatform() : super(token: _token);
@@ -186,9 +188,8 @@ abstract class OpenWearablesHealthSdkPlatform extends PlatformInterface {
 
   /// Redeems an invitation code against `{host}/api/v1/invitation-code/redeem`
   /// using the SDK's HTTP client (so the configured client certificate, if
-  /// any, is presented). Returns a map with `statusCode` (int), `body`
-  /// (String), and `data` (Map<String, dynamic>).
-  Future<Map<String, dynamic>> redeemInvitationCode({
+  /// any, is presented).
+  Future<RedeemResult> redeemInvitationCode({
     required String host,
     required String code,
   }) {
