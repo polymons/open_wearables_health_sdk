@@ -165,6 +165,35 @@ abstract class OpenWearablesHealthSdkPlatform extends PlatformInterface {
   Future<void> setLogLevel({required String level}) {
     throw UnimplementedError('setLogLevel() has not been implemented.');
   }
+
+  // MARK: - mTLS client certificate (Android KeyChain)
+
+  /// Prompts the user to pick a client certificate from the Android system
+  /// KeyChain. Returns the chosen alias, or null if cancelled / unsupported.
+  Future<String?> pickClientCertificate({String? hostHint}) {
+    throw UnimplementedError('pickClientCertificate() has not been implemented.');
+  }
+
+  /// Returns the alias currently selected for mTLS, or null if none.
+  Future<String?> getClientCertificateAlias() {
+    throw UnimplementedError('getClientCertificateAlias() has not been implemented.');
+  }
+
+  /// Forgets the currently selected client certificate alias.
+  Future<void> clearClientCertificate() {
+    throw UnimplementedError('clearClientCertificate() has not been implemented.');
+  }
+
+  /// Redeems an invitation code against `{host}/api/v1/invitation-code/redeem`
+  /// using the SDK's HTTP client (so the configured client certificate, if
+  /// any, is presented). Returns a map with `statusCode` (int), `body`
+  /// (String), and `data` (Map<String, dynamic>).
+  Future<Map<String, dynamic>> redeemInvitationCode({
+    required String host,
+    required String code,
+  }) {
+    throw UnimplementedError('redeemInvitationCode() has not been implemented.');
+  }
 }
 
 /// NO-OP placeholder.

@@ -180,4 +180,33 @@ class MethodChannelOpenWearablesHealthSdk extends OpenWearablesHealthSdkPlatform
   Future<void> setLogLevel({required String level}) async {
     await _channel.invokeMethod<void>('setLogLevel', {'level': level});
   }
+
+  @override
+  Future<String?> pickClientCertificate({String? hostHint}) async {
+    return _channel.invokeMethod<String?>('pickClientCertificate', {
+      if (hostHint != null) 'hostHint': hostHint,
+    });
+  }
+
+  @override
+  Future<String?> getClientCertificateAlias() async {
+    return _channel.invokeMethod<String?>('getClientCertificateAlias');
+  }
+
+  @override
+  Future<void> clearClientCertificate() async {
+    await _channel.invokeMethod<void>('clearClientCertificate');
+  }
+
+  @override
+  Future<Map<String, dynamic>> redeemInvitationCode({
+    required String host,
+    required String code,
+  }) async {
+    final result = await _channel.invokeMethod<Map<Object?, Object?>>(
+      'redeemInvitationCode',
+      {'host': host, 'code': code},
+    );
+    return (result ?? {}).map((k, v) => MapEntry(k.toString(), v));
+  }
 }

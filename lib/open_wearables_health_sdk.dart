@@ -496,6 +496,38 @@ class OpenWearablesHealthSdk {
     }
   }
 
+  // MARK: - mTLS client certificate (Android KeyChain)
+
+  /// Prompts the user to pick a client certificate from the Android system
+  /// KeyChain. The selected alias is persisted; subsequent app launches
+  /// auto-install it on the SDK's HTTP client. Returns the chosen alias, or
+  /// null if cancelled. iOS / no-Activity cases return null.
+  static Future<String?> pickClientCertificate({String? hostHint}) {
+    return _platform.pickClientCertificate(hostHint: hostHint);
+  }
+
+  /// Returns the alias currently selected for mTLS, or null if none.
+  static Future<String?> getClientCertificateAlias() {
+    return _platform.getClientCertificateAlias();
+  }
+
+  /// Forgets the currently selected client certificate alias.
+  static Future<void> clearClientCertificate() {
+    return _platform.clearClientCertificate();
+  }
+
+  /// Redeems an invitation code through the SDK's native HTTP client, so the
+  /// configured client certificate (if any) is presented during the TLS
+  /// handshake. Use this instead of a Dart `http.post` when the backend is
+  /// behind mTLS — the cert lives in Android KeyChain and isn't accessible
+  /// from Dart's `dart:io` HttpClient.
+  static Future<Map<String, dynamic>> redeemInvitationCode({
+    required String host,
+    required String code,
+  }) {
+    return _platform.redeemInvitationCode(host: host, code: code);
+  }
+
   // MARK: - Helpers
 
   static void _ensureSignedIn() {

@@ -25,3 +25,12 @@ plugins {
 }
 
 include(":app")
+
+// Use the local, mTLS-patched copy of the Android SDK instead of the
+// upstream JitPack artifact declared in ../android/build.gradle.
+includeBuild("../../../open_wearables_android_sdk") {
+    dependencySubstitution {
+        substitute(module("com.github.the-momentum.open_wearables_android_sdk:sdk"))
+            .using(project(":sdk"))
+    }
+}
