@@ -690,7 +690,7 @@ class _HomePageState extends State<HomePage> {
                           ? 'No client certificate selected'
                           : 'Cert: $_clientCertAlias',
                       style: const TextStyle(
-                          color: OWColors.text, fontSize: 15),
+                          color: OWColors.textSecondary, fontSize: 15),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
