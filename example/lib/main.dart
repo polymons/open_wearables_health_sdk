@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:open_wearables_health_sdk/health_data_type.dart';
 import 'package:open_wearables_health_sdk/open_wearables_health_sdk.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
@@ -31,7 +33,8 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await SentryFlutter.init((options) {
-    options.dsn = 'https://3d912364254042549967f3560053f841@sentry.mntm.dev/109';
+    options.dsn =
+        'https://3d912364254042549967f3560053f841@sentry.mntm.dev/109';
   }, appRunner: () => runApp(MyApp()));
 }
 
@@ -133,6 +136,12 @@ class _HomePageState extends State<HomePage> {
   // on iOS where this is unsupported.
   String? _clientCertAlias;
 
+  StreamSubscription<String>? _logSubscription;
+  StreamSubscription<Map<String, dynamic>>? _authErrorSubscription;
+
+  Map<String, dynamic>? _syncStatus;
+  bool _isLoadingSyncStatus = false;
+
   @override
   void initState() {
     super.initState();
@@ -156,13 +165,14 @@ class _HomePageState extends State<HomePage> {
     final hostHint = _hostController.text.trim().isEmpty
         ? null
         : Uri.tryParse(_hostController.text.trim())?.host;
-    final alias =
-        await OpenWearablesHealthSdk.pickClientCertificate(hostHint: hostHint);
+    final alias = await OpenWearablesHealthSdk.pickClientCertificate(
+      hostHint: hostHint,
+    );
     if (!mounted) return;
     setState(() => _clientCertAlias = alias);
-    _setStatus(alias == null
-        ? 'No certificate selected'
-        : 'Using certificate: $alias');
+    _setStatus(
+      alias == null ? 'No certificate selected' : 'Using certificate: $alias',
+    );
   }
 
   Future<void> _clearClientCert() async {
@@ -174,38 +184,56 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _subscribeToNativeLogs() {
-    MethodChannelOpenWearablesHealthSdk.logStream.listen((message) {
-      final timestamp = DateTime.now().toIso8601String().split('T').last.split('.').first;
+    _logSubscription = MethodChannelOpenWearablesHealthSdk.logStream.listen((
+      message,
+    ) {
+      final timestamp = DateTime.now()
+          .toIso8601String()
+          .split('T')
+          .last
+          .split('.')
+          .first;
       _addLog('$timestamp $message');
 
-      Sentry.addBreadcrumb(Breadcrumb(category: 'sdk.log', message: message, level: _sentryLevelFromLog(message)));
+      Sentry.addBreadcrumb(
+        Breadcrumb(
+          category: 'sdk.log',
+          message: message,
+          level: _sentryLevelFromLog(message),
+        ),
+      );
     });
 
     // Handle auth errors (401) - sign out and redirect to login
-    MethodChannelOpenWearablesHealthSdk.authErrorStream.listen((error) {
-      final statusCode = error['statusCode'];
-      final message = error['message'] ?? 'Authentication error';
-      _addLog('🔒 Auth error: $statusCode - $message');
+    _authErrorSubscription = MethodChannelOpenWearablesHealthSdk.authErrorStream
+        .listen((error) {
+          final statusCode = error['statusCode'];
+          final message = error['message'] ?? 'Authentication error';
+          _addLog('🔒 Auth error: $statusCode - $message');
 
-      Sentry.captureEvent(
-        SentryEvent(
-          message: SentryMessage('Auth error: forced disconnect'),
-          level: SentryLevel.error,
-          tags: {'statusCode': '$statusCode'},
-          contexts: Contexts()..['auth_error'] = error,
-        ),
-      );
+          Sentry.captureEvent(
+            SentryEvent(
+              message: SentryMessage('Auth error: forced disconnect'),
+              level: SentryLevel.error,
+              tags: {'statusCode': '$statusCode'},
+              contexts: Contexts()..['auth_error'] = error,
+            ),
+          );
 
-      _handleAuthError();
-    });
+          _handleAuthError();
+        });
   }
 
   SentryLevel _sentryLevelFromLog(String message) {
     final lower = message.toLowerCase();
-    if (lower.contains('error') || lower.contains('failed') || lower.contains('401')) {
+    if (lower.contains('error') ||
+        lower.contains('failed') ||
+        lower.contains('401')) {
       return SentryLevel.error;
     }
-    if (lower.contains('warn') || lower.contains('retry') || lower.contains('rejected')) {
+    if (lower.contains('warn') ||
+        lower.contains('retry') ||
+        lower.contains('rejected')) {
       return SentryLevel.warning;
     }
     return SentryLevel.info;
@@ -213,7 +241,11 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _handleAuthError() async {
     Sentry.addBreadcrumb(
-      Breadcrumb(category: 'auth', message: 'Signing out due to auth error', level: SentryLevel.warning),
+      Breadcrumb(
+        category: 'auth',
+        message: 'Signing out due to auth error',
+        level: SentryLevel.warning,
+      ),
     );
 
     try {
@@ -234,6 +266,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _logSubscription?.cancel();
+    _authErrorSubscription?.cancel();
     _hostController.dispose();
     _invitationCodeController.dispose();
     _customDaysController.dispose();
@@ -243,13 +277,21 @@ class _HomePageState extends State<HomePage> {
   Future<void> _autoConfigureOnStartup() async {
     setState(() => _isLoading = true);
     try {
-      await OpenWearablesHealthSdk.setLogLevel(OWLogLevel.always);
+      await OpenWearablesHealthSdk.setLogLevel(
+        kDebugMode ? OWLogLevel.debug : OWLogLevel.none,
+      );
       final credentials = await OpenWearablesHealthSdk.getStoredCredentials();
-      final hasUserId = credentials['userId'] != null && (credentials['userId'] as String).isNotEmpty;
+      final hasUserId =
+          credentials['userId'] != null &&
+          (credentials['userId'] as String).isNotEmpty;
       final hasAccessToken =
-          (credentials['accessToken'] != null && (credentials['accessToken'] as String).isNotEmpty) ||
-          (credentials['apiKey'] != null && (credentials['apiKey'] as String).isNotEmpty);
-      final hasHost = credentials['host'] != null && (credentials['host'] as String).isNotEmpty;
+          (credentials['accessToken'] != null &&
+              (credentials['accessToken'] as String).isNotEmpty) ||
+          (credentials['apiKey'] != null &&
+              (credentials['apiKey'] as String).isNotEmpty);
+      final hasHost =
+          credentials['host'] != null &&
+          (credentials['host'] as String).isNotEmpty;
       final wasSyncActive = credentials['isSyncActive'] == true;
 
       if (hasHost) {
@@ -265,8 +307,11 @@ class _HomePageState extends State<HomePage> {
       }
 
       if (hasUserId && hasAccessToken && hasHost && wasSyncActive) {
-        await OpenWearablesHealthSdk.configure(host: credentials['host'] as String);
+        await OpenWearablesHealthSdk.configure(
+          host: credentials['host'] as String,
+        );
         _checkStatus();
+        await _refreshSyncStatus();
         _setStatus('Session restored');
       }
 
@@ -279,7 +324,11 @@ class _HomePageState extends State<HomePage> {
       }
     } catch (e, stackTrace) {
       debugPrint('Auto-configure failed: $e');
-      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'autoConfigureOnStartup'}));
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'autoConfigureOnStartup'}),
+      );
     } finally {
       setState(() => _isLoading = false);
     }
@@ -316,7 +365,10 @@ class _HomePageState extends State<HomePage> {
       Sentry.captureException(
         e,
         stackTrace: stackTrace,
-        hint: Hint.withMap({'operation': 'selectProvider', 'providerId': providerId}),
+        hint: Hint.withMap({
+          'operation': 'selectProvider',
+          'providerId': providerId,
+        }),
       );
     } finally {
       setState(() => _isLoading = false);
@@ -380,12 +432,19 @@ class _HomePageState extends State<HomePage> {
 
       // Sign in with the received credentials
       _setStatus('Signing in...');
-      final bearerToken = accessToken.startsWith('Bearer ') ? accessToken : 'Bearer $accessToken';
-      await OpenWearablesHealthSdk.signIn(userId: userId, accessToken: bearerToken, refreshToken: refreshToken);
+      final bearerToken = accessToken.startsWith('Bearer ')
+          ? accessToken
+          : 'Bearer $accessToken';
+      await OpenWearablesHealthSdk.signIn(
+        userId: userId,
+        accessToken: bearerToken,
+        refreshToken: refreshToken,
+      );
 
       Sentry.configureScope((scope) => scope.setUser(SentryUser(id: userId)));
       _setStatus('Connected successfully');
       _checkStatus();
+      await _refreshSyncStatus();
 
       if (Platform.isAndroid) {
         await _loadAvailableProviders();
@@ -416,9 +475,81 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  Future<void> _refreshSyncStatus() async {
+    if (!OpenWearablesHealthSdk.isSignedIn) return;
+    setState(() => _isLoadingSyncStatus = true);
+    try {
+      final status = await OpenWearablesHealthSdk.getSyncStatus();
+      if (!mounted) return;
+      setState(() => _syncStatus = status);
+    } catch (e) {
+      debugPrint('Failed to load sync status: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingSyncStatus = false);
+      }
+    }
+  }
+
+  Future<void> _resumeSync() async {
+    setState(() => _isLoading = true);
+    try {
+      await OpenWearablesHealthSdk.resumeSync();
+      _setStatus('Resumed sync session');
+      await _refreshSyncStatus();
+      _checkStatus();
+    } catch (e, stackTrace) {
+      _setStatus('Error: $e');
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'resumeSync'}),
+      );
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _clearSyncSession() async {
+    setState(() => _isLoading = true);
+    try {
+      await OpenWearablesHealthSdk.clearSyncSession();
+      _setStatus('Cleared interrupted sync session');
+      await _refreshSyncStatus();
+    } catch (e, stackTrace) {
+      _setStatus('Error: $e');
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'clearSyncSession'}),
+      );
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _resetAnchors() async {
+    setState(() => _isLoading = true);
+    try {
+      await OpenWearablesHealthSdk.resetAnchors();
+      _setStatus('Reset sync anchors');
+      await _refreshSyncStatus();
+    } catch (e, stackTrace) {
+      _setStatus('Error: $e');
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'resetAnchors'}),
+      );
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
   void _setStatus(String message) {
     setState(() => _statusMessage = message);
-    final log = '${DateTime.now().toIso8601String().split('T').last.split('.').first} $message';
+    final log =
+        '${DateTime.now().toIso8601String().split('T').last.split('.').first} $message';
     _addLog(log);
     debugPrint('[Demo] $message');
   }
@@ -430,6 +561,7 @@ class _HomePageState extends State<HomePage> {
       Sentry.configureScope((scope) => scope.setUser(null));
       _setStatus('Signed out');
       _checkStatus();
+      setState(() => _syncStatus = null);
       setState(() {
         _isAuthorized = false;
         _isSyncing = false;
@@ -437,7 +569,11 @@ class _HomePageState extends State<HomePage> {
       });
     } catch (e, stackTrace) {
       _setStatus('Error: $e');
-      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'signOut'}));
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'signOut'}),
+      );
     } finally {
       setState(() => _isLoading = false);
     }
@@ -446,19 +582,29 @@ class _HomePageState extends State<HomePage> {
   Future<void> _requestAuthorization() async {
     setState(() => _isLoading = true);
     try {
-      final authorized = await OpenWearablesHealthSdk.requestAuthorization(types: HealthDataType.values);
+      final authorized = await OpenWearablesHealthSdk.requestAuthorization(
+        types: HealthDataType.values,
+      );
       setState(() => _isAuthorized = authorized);
       _setStatus(authorized ? 'Authorized' : 'Authorization denied');
+      await _refreshSyncStatus();
       if (!authorized) {
         Sentry.captureEvent(
-          SentryEvent(message: SentryMessage('Health authorization denied by user'), level: SentryLevel.warning),
+          SentryEvent(
+            message: SentryMessage('Health authorization denied by user'),
+            level: SentryLevel.warning,
+          ),
         );
       }
     } on NotSignedInException {
       _setStatus('Sign in first');
     } catch (e, stackTrace) {
       _setStatus('Error: $e');
-      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'requestAuthorization'}));
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'requestAuthorization'}),
+      );
     } finally {
       setState(() => _isLoading = false);
     }
@@ -467,10 +613,15 @@ class _HomePageState extends State<HomePage> {
   Future<void> _startBackgroundSync() async {
     setState(() => _isLoading = true);
     try {
-      final label = _syncDaysBack != null ? 'last $_syncDaysBack days' : 'full history';
-      final started = await OpenWearablesHealthSdk.startBackgroundSync(syncDaysBack: _syncDaysBack);
+      final label = _syncDaysBack != null
+          ? 'last $_syncDaysBack days'
+          : 'full history';
+      final started = await OpenWearablesHealthSdk.startBackgroundSync(
+        syncDaysBack: _syncDaysBack,
+      );
       setState(() => _isSyncing = started);
       _setStatus(started ? 'Sync started ($label)' : 'Could not start sync');
+      await _refreshSyncStatus();
       if (!started) {
         Sentry.captureEvent(
           SentryEvent(
@@ -484,7 +635,11 @@ class _HomePageState extends State<HomePage> {
       _setStatus('Sign in first');
     } catch (e, stackTrace) {
       _setStatus('Error: $e');
-      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'startBackgroundSync'}));
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'startBackgroundSync'}),
+      );
     } finally {
       setState(() => _isLoading = false);
     }
@@ -496,9 +651,14 @@ class _HomePageState extends State<HomePage> {
       await OpenWearablesHealthSdk.stopBackgroundSync();
       setState(() => _isSyncing = false);
       _setStatus('Sync stopped');
+      await _refreshSyncStatus();
     } catch (e, stackTrace) {
       _setStatus('Error: $e');
-      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'stopBackgroundSync'}));
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'stopBackgroundSync'}),
+      );
     } finally {
       setState(() => _isLoading = false);
     }
@@ -509,11 +669,16 @@ class _HomePageState extends State<HomePage> {
     try {
       await OpenWearablesHealthSdk.syncNow();
       _setStatus('Sync triggered');
+      await _refreshSyncStatus();
     } on NotSignedInException {
       _setStatus('Sign in first');
     } catch (e, stackTrace) {
       _setStatus('Error: $e');
-      Sentry.captureException(e, stackTrace: stackTrace, hint: Hint.withMap({'operation': 'syncNow'}));
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'syncNow'}),
+      );
     } finally {
       setState(() => _isLoading = false);
     }
@@ -531,15 +696,25 @@ class _HomePageState extends State<HomePage> {
             flexibleSpace: FlexibleSpaceBar(
               title: const Text(
                 'Open Wearables',
-                style: TextStyle(color: OWColors.textPrimary, fontSize: 20, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  color: OWColors.textPrimary,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               titlePadding: const EdgeInsets.only(left: 20, bottom: 16),
             ),
             actions: [
               CupertinoButton(
                 padding: const EdgeInsets.all(12),
-                child: const Icon(CupertinoIcons.doc_text, size: 24, color: OWColors.textSecondary),
-                onPressed: () => Navigator.of(context).push(CupertinoPageRoute(builder: (c) => const LogsPage())),
+                child: const Icon(
+                  CupertinoIcons.doc_text,
+                  size: 24,
+                  color: OWColors.textSecondary,
+                ),
+                onPressed: () => Navigator.of(
+                  context,
+                ).push(CupertinoPageRoute(builder: (c) => const LogsPage())),
               ),
             ],
           ),
@@ -556,15 +731,23 @@ class _HomePageState extends State<HomePage> {
                   if (!_isSignedIn) ...[
                     _buildLoginSection(),
                   ] else ...[
-                    if (Platform.isAndroid && _availableProviders.isNotEmpty) ...[
+                    if (Platform.isAndroid &&
+                        _availableProviders.isNotEmpty) ...[
                       _buildProviderSection(),
                       const SizedBox(height: 16),
                     ],
-                    if (_isAuthorized && !_isSyncing) ...[_buildSyncRangeSection()],
+                    _buildSyncStatusSection(),
+                    const SizedBox(height: 16),
+                    if (_isAuthorized && !_isSyncing) ...[
+                      _buildSyncRangeSection(),
+                    ],
                     _buildActionsSection(),
                   ],
 
-                  if (_statusMessage.isNotEmpty) ...[const SizedBox(height: 24), _buildStatusMessage()],
+                  if (_statusMessage.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    _buildStatusMessage(),
+                  ],
                 ],
               ),
             ),
@@ -593,12 +776,16 @@ class _HomePageState extends State<HomePage> {
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: _isSyncing
-                    ? [OWColors.success, OWColors.success.withValues(alpha: 0.7)]
+                    ? [
+                        OWColors.success,
+                        OWColors.success.withValues(alpha: 0.7),
+                      ]
                     : [OWColors.error, OWColors.error.withValues(alpha: 0.7)],
               ),
               boxShadow: [
                 BoxShadow(
-                  color: (_isSyncing ? OWColors.success : OWColors.error).withValues(alpha: 0.3),
+                  color: (_isSyncing ? OWColors.success : OWColors.error)
+                      .withValues(alpha: 0.3),
                   blurRadius: 12,
                   spreadRadius: 2,
                 ),
@@ -629,13 +816,18 @@ class _HomePageState extends State<HomePage> {
                   _isSignedIn
                       ? 'Connected${_selectedProviderId != null ? ' via ${_providerDisplayName(_selectedProviderId!)}' : ''}'
                       : 'Not connected',
-                  style: const TextStyle(fontSize: 15, color: OWColors.textSecondary, letterSpacing: -0.2),
+                  style: const TextStyle(
+                    fontSize: 15,
+                    color: OWColors.textSecondary,
+                    letterSpacing: -0.2,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
           ),
-          if (_isLoading) const CupertinoActivityIndicator(color: OWColors.accent),
+          if (_isLoading)
+            const CupertinoActivityIndicator(color: OWColors.accent),
         ],
       ),
     );
@@ -681,8 +873,11 @@ class _HomePageState extends State<HomePage> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Row(
                 children: [
-                  const Icon(CupertinoIcons.lock_shield,
-                      color: OWColors.textMuted, size: 20),
+                  const Icon(
+                    CupertinoIcons.lock_shield,
+                    color: OWColors.textMuted,
+                    size: 20,
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
@@ -690,15 +885,15 @@ class _HomePageState extends State<HomePage> {
                           ? 'No client certificate selected'
                           : 'Cert: $_clientCertAlias',
                       style: const TextStyle(
-                          color: OWColors.textSecondary, fontSize: 15),
+                        color: OWColors.textSecondary,
+                        fontSize: 15,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   TextButton(
                     onPressed: _isLoading ? null : _pickClientCert,
-                    child: Text(
-                      _clientCertAlias == null ? 'Select' : 'Change',
-                    ),
+                    child: Text(_clientCertAlias == null ? 'Select' : 'Change'),
                   ),
                   if (_clientCertAlias != null)
                     TextButton(
@@ -719,16 +914,27 @@ class _HomePageState extends State<HomePage> {
                   foregroundColor: OWColors.buttonText,
                   disabledBackgroundColor: OWColors.buttonHover,
                   padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                   elevation: 0,
                 ),
                 child: _isLoading
                     ? const SizedBox(
                         height: 20,
                         width: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: OWColors.buttonText),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: OWColors.buttonText,
+                        ),
                       )
-                    : const Text('Connect', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                    : const Text(
+                        'Connect',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
               ),
             ),
           ),
@@ -760,7 +966,10 @@ class _HomePageState extends State<HomePage> {
               padding: EdgeInsets.zero,
               decoration: const BoxDecoration(),
               style: const TextStyle(fontSize: 17, color: OWColors.textPrimary),
-              placeholderStyle: const TextStyle(fontSize: 17, color: OWColors.textMuted),
+              placeholderStyle: const TextStyle(
+                fontSize: 17,
+                color: OWColors.textMuted,
+              ),
               cursorColor: OWColors.accent,
             ),
           ),
@@ -809,7 +1018,10 @@ class _HomePageState extends State<HomePage> {
             if (i > 0)
               Padding(
                 padding: const EdgeInsets.only(left: 64),
-                child: Divider(height: 1, color: OWColors.border.withValues(alpha: 0.5)),
+                child: Divider(
+                  height: 1,
+                  color: OWColors.border.withValues(alpha: 0.5),
+                ),
               ),
             _buildProviderOption(_availableProviders[i]),
           ],
@@ -821,7 +1033,9 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildProviderOption(AvailableProvider provider) {
     final isSelected = _selectedProviderId == provider.id;
-    final iconData = provider.id == 'samsung' ? CupertinoIcons.device_phone_portrait : CupertinoIcons.heart_circle;
+    final iconData = provider.id == 'samsung'
+        ? CupertinoIcons.device_phone_portrait
+        : CupertinoIcons.heart_circle;
 
     return CupertinoButton(
       padding: EdgeInsets.zero,
@@ -838,10 +1052,15 @@ class _HomePageState extends State<HomePage> {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: (isSelected ? OWColors.accentIndigo : OWColors.textMuted).withValues(alpha: 0.15),
+                color: (isSelected ? OWColors.accentIndigo : OWColors.textMuted)
+                    .withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(iconData, color: isSelected ? OWColors.accentIndigo : OWColors.textMuted, size: 20),
+              child: Icon(
+                iconData,
+                color: isSelected ? OWColors.accentIndigo : OWColors.textMuted,
+                size: 20,
+              ),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -853,13 +1072,21 @@ class _HomePageState extends State<HomePage> {
                     style: TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.w500,
-                      color: isSelected ? OWColors.textPrimary : OWColors.textSecondary,
+                      color: isSelected
+                          ? OWColors.textPrimary
+                          : OWColors.textSecondary,
                       letterSpacing: -0.2,
                     ),
                   ),
                   Text(
-                    provider.id == 'samsung' ? 'Samsung devices with Samsung Health' : 'Universal Android health hub',
-                    style: const TextStyle(fontSize: 14, color: OWColors.textMuted, letterSpacing: -0.1),
+                    provider.id == 'samsung'
+                        ? 'Samsung devices with Samsung Health'
+                        : 'Universal Android health hub',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: OWColors.textMuted,
+                      letterSpacing: -0.1,
+                    ),
                   ),
                 ],
               ),
@@ -871,9 +1098,214 @@ class _HomePageState extends State<HomePage> {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: isSelected ? OWColors.accentIndigo : Colors.transparent,
-                border: Border.all(color: isSelected ? OWColors.accentIndigo : OWColors.textFooter, width: 2),
+                border: Border.all(
+                  color: isSelected
+                      ? OWColors.accentIndigo
+                      : OWColors.textFooter,
+                  width: 2,
+                ),
               ),
-              child: isSelected ? const Icon(Icons.check, size: 16, color: Colors.white) : null,
+              child: isSelected
+                  ? const Icon(Icons.check, size: 16, color: Colors.white)
+                  : null,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSyncStatusSection() {
+    final status = _syncStatus;
+    final hasResumableSession = status?['hasResumableSession'] == true;
+    final sentCount = status?['sentCount'];
+    final isFullExport = status?['isFullExport'] == true;
+    final createdAt = status?['createdAt'] as String?;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: OWColors.surface.withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: OWColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 20, 20, 4),
+            child: Text(
+              'SYNC STATUS',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: OWColors.textMuted,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Text(
+              'Battery-friendly sync state and recovery tools',
+              style: TextStyle(fontSize: 14, color: OWColors.textFooter),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildStatusPill(
+                  label: _isSyncing
+                      ? 'Background sync active'
+                      : 'Background sync idle',
+                  isActive: _isSyncing,
+                ),
+                _buildStatusPill(
+                  label: hasResumableSession
+                      ? 'Resumable session detected'
+                      : 'No resumable session',
+                  isActive: hasResumableSession,
+                ),
+                _buildStatusPill(
+                  label: isFullExport ? 'Full export' : 'Incremental sync',
+                  isActive: true,
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Sent count: ${sentCount ?? '—'}',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    color: OWColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Created at: ${createdAt ?? '—'}',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    color: OWColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Log level: ${OpenWearablesHealthSdk.logLevel.name}',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    color: OWColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_isLoadingSyncStatus)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 16),
+              child: LinearProgressIndicator(minHeight: 2),
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildCompactActionButton(
+                  label: 'Refresh',
+                  icon: CupertinoIcons.refresh,
+                  onTap: _refreshSyncStatus,
+                ),
+                _buildCompactActionButton(
+                  label: 'Resume',
+                  icon: CupertinoIcons.play_fill,
+                  onTap: hasResumableSession ? _resumeSync : null,
+                ),
+                _buildCompactActionButton(
+                  label: 'Clear Session',
+                  icon: CupertinoIcons.trash,
+                  onTap: hasResumableSession ? _clearSyncSession : null,
+                ),
+                _buildCompactActionButton(
+                  label: 'Reset Anchors',
+                  icon: CupertinoIcons.arrow_counterclockwise,
+                  onTap: _resetAnchors,
+                  destructive: true,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusPill({required String label, required bool isActive}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: (isActive ? OWColors.success : OWColors.textFooter).withValues(
+          alpha: 0.12,
+        ),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: (isActive ? OWColors.success : OWColors.textFooter).withValues(
+            alpha: 0.3,
+          ),
+        ),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w500,
+          color: isActive ? OWColors.textPrimary : OWColors.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompactActionButton({
+    required String label,
+    required IconData icon,
+    required Future<void> Function()? onTap,
+    bool destructive = false,
+  }) {
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      onPressed: _isLoading || onTap == null ? null : () => onTap(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: (destructive ? OWColors.error : OWColors.accentIndigo)
+              .withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: (destructive ? OWColors.error : OWColors.accentIndigo)
+                .withValues(alpha: 0.3),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: destructive ? OWColors.error : OWColors.accentIndigo,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                color: destructive ? OWColors.error : OWColors.textPrimary,
+              ),
             ),
           ],
         ),
@@ -929,7 +1361,8 @@ class _HomePageState extends State<HomePage> {
                   for (final preset in presets)
                     _buildRangeChip(
                       label: preset.label,
-                      isSelected: !_isCustomDays && _syncDaysBack == preset.days,
+                      isSelected:
+                          !_isCustomDays && _syncDaysBack == preset.days,
                       onTap: () => setState(() {
                         _syncDaysBack = preset.days;
                         _isCustomDays = false;
@@ -941,7 +1374,9 @@ class _HomePageState extends State<HomePage> {
                     onTap: () => setState(() {
                       _isCustomDays = true;
                       if (_customDaysController.text.isNotEmpty) {
-                        _syncDaysBack = int.tryParse(_customDaysController.text);
+                        _syncDaysBack = int.tryParse(
+                          _customDaysController.text,
+                        );
                       }
                     }),
                   ),
@@ -953,7 +1388,11 @@ class _HomePageState extends State<HomePage> {
                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
                 child: Row(
                   children: [
-                    const Icon(CupertinoIcons.number, color: OWColors.textMuted, size: 20),
+                    const Icon(
+                      CupertinoIcons.number,
+                      color: OWColors.textMuted,
+                      size: 20,
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: CupertinoTextField(
@@ -962,8 +1401,14 @@ class _HomePageState extends State<HomePage> {
                         keyboardType: TextInputType.number,
                         padding: const EdgeInsets.symmetric(vertical: 10),
                         decoration: const BoxDecoration(),
-                        style: const TextStyle(fontSize: 17, color: OWColors.textPrimary),
-                        placeholderStyle: const TextStyle(fontSize: 17, color: OWColors.textMuted),
+                        style: const TextStyle(
+                          fontSize: 17,
+                          color: OWColors.textPrimary,
+                        ),
+                        placeholderStyle: const TextStyle(
+                          fontSize: 17,
+                          color: OWColors.textMuted,
+                        ),
                         cursorColor: OWColors.accent,
                         onChanged: (value) {
                           setState(() {
@@ -973,7 +1418,13 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     if (_syncDaysBack != null && _isCustomDays)
-                      Text('days', style: const TextStyle(fontSize: 15, color: OWColors.textSecondary)),
+                      Text(
+                        'days',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          color: OWColors.textSecondary,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -984,7 +1435,11 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildRangeChip({required String label, required bool isSelected, required VoidCallback onTap}) {
+  Widget _buildRangeChip({
+    required String label,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -993,7 +1448,9 @@ class _HomePageState extends State<HomePage> {
         decoration: BoxDecoration(
           color: isSelected ? OWColors.accentIndigo : OWColors.surfaceLight,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: isSelected ? OWColors.accentIndigo : OWColors.border),
+          border: Border.all(
+            color: isSelected ? OWColors.accentIndigo : OWColors.border,
+          ),
         ),
         child: Text(
           label,
@@ -1091,15 +1548,28 @@ class _HomePageState extends State<HomePage> {
                     style: TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.w500,
-                      color: destructive ? OWColors.error : OWColors.textPrimary,
+                      color: destructive
+                          ? OWColors.error
+                          : OWColors.textPrimary,
                       letterSpacing: -0.2,
                     ),
                   ),
-                  Text(subtitle, style: const TextStyle(fontSize: 14, color: OWColors.textMuted, letterSpacing: -0.1)),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: OWColors.textMuted,
+                      letterSpacing: -0.1,
+                    ),
+                  ),
                 ],
               ),
             ),
-            const Icon(CupertinoIcons.chevron_right, color: OWColors.textFooter, size: 20),
+            const Icon(
+              CupertinoIcons.chevron_right,
+              color: OWColors.textFooter,
+              size: 20,
+            ),
           ],
         ),
       ),
@@ -1107,7 +1577,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildStatusMessage() {
-    final isError = _statusMessage.toLowerCase().contains('error') || _statusMessage.toLowerCase().contains('failed');
+    final isError =
+        _statusMessage.toLowerCase().contains('error') ||
+        _statusMessage.toLowerCase().contains('failed');
     final statusColor = isError ? OWColors.error : OWColors.success;
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1119,7 +1591,9 @@ class _HomePageState extends State<HomePage> {
       child: Row(
         children: [
           Icon(
-            isError ? CupertinoIcons.exclamationmark_circle : CupertinoIcons.checkmark_circle,
+            isError
+                ? CupertinoIcons.exclamationmark_circle
+                : CupertinoIcons.checkmark_circle,
             color: statusColor,
             size: 22,
           ),
@@ -1127,7 +1601,11 @@ class _HomePageState extends State<HomePage> {
           Expanded(
             child: Text(
               _statusMessage,
-              style: TextStyle(fontSize: 15, color: statusColor, fontWeight: FontWeight.w500),
+              style: TextStyle(
+                fontSize: 15,
+                color: statusColor,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
         ],
@@ -1171,7 +1649,9 @@ class _LogsPageState extends State<LogsPage> {
       _cachedFilteredLogs = appLogs.reversed.toList();
     } else {
       final query = _searchQuery.toLowerCase();
-      _cachedFilteredLogs = appLogs.reversed.where((log) => log.toLowerCase().contains(query)).toList();
+      _cachedFilteredLogs = appLogs.reversed
+          .where((log) => log.toLowerCase().contains(query))
+          .toList();
     }
     return _cachedFilteredLogs;
   }
@@ -1184,7 +1664,11 @@ class _LogsPageState extends State<LogsPage> {
         backgroundColor: OWColors.background,
         title: const Text(
           'Sync Logs',
-          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: OWColors.textPrimary),
+          style: TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.w600,
+            color: OWColors.textPrimary,
+          ),
         ),
         leading: CupertinoButton(
           padding: EdgeInsets.zero,
@@ -1215,7 +1699,10 @@ class _LogsPageState extends State<LogsPage> {
               style: const TextStyle(color: OWColors.textPrimary),
               backgroundColor: OWColors.surface,
               placeholderStyle: const TextStyle(color: OWColors.textMuted),
-              prefixIcon: const Icon(CupertinoIcons.search, color: OWColors.textMuted),
+              prefixIcon: const Icon(
+                CupertinoIcons.search,
+                color: OWColors.textMuted,
+              ),
             ),
           ),
           Expanded(
@@ -1229,9 +1716,19 @@ class _LogsPageState extends State<LogsPage> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(CupertinoIcons.doc_text, size: 48, color: OWColors.textFooter),
+                        const Icon(
+                          CupertinoIcons.doc_text,
+                          size: 48,
+                          color: OWColors.textFooter,
+                        ),
                         const SizedBox(height: 12),
-                        const Text('No logs yet', style: TextStyle(fontSize: 17, color: OWColors.textMuted)),
+                        const Text(
+                          'No logs yet',
+                          style: TextStyle(
+                            fontSize: 17,
+                            color: OWColors.textMuted,
+                          ),
+                        ),
                       ],
                     ),
                   );
@@ -1242,9 +1739,19 @@ class _LogsPageState extends State<LogsPage> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(CupertinoIcons.search, size: 48, color: OWColors.textFooter),
+                        const Icon(
+                          CupertinoIcons.search,
+                          size: 48,
+                          color: OWColors.textFooter,
+                        ),
                         const SizedBox(height: 12),
-                        const Text('No results', style: TextStyle(fontSize: 17, color: OWColors.textMuted)),
+                        const Text(
+                          'No results',
+                          style: TextStyle(
+                            fontSize: 17,
+                            color: OWColors.textMuted,
+                          ),
+                        ),
                       ],
                     ),
                   );
@@ -1308,7 +1815,12 @@ class _LogItem extends StatelessWidget {
           Expanded(
             child: Text(
               log,
-              style: const TextStyle(fontSize: 13, fontFamily: 'Menlo', color: OWColors.textSecondary, height: 1.4),
+              style: const TextStyle(
+                fontSize: 13,
+                fontFamily: 'Menlo',
+                color: OWColors.textSecondary,
+                height: 1.4,
+              ),
             ),
           ),
         ],
