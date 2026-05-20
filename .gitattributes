@@ -1,0 +1,4 @@
+* text=auto
+
+# Shell scripts must keep LF endings or the shebang breaks on macOS/Linux.
+*.sh text eol=lf
